@@ -8,6 +8,7 @@ use App\Http\Requests\Auth\LoginRequest;
 use App\Http\Requests\Auth\RegisterRequest;
 use App\Http\Resources\UserResource;
 use App\Models\User;
+use Illuminate\Auth\Events\Registered;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -30,6 +31,9 @@ class AuthController extends Controller
         ]);
         $user->role = Role::from($request->validated('role'));
         $user->save();
+
+        // Sends the verification email (SendEmailVerificationNotification listener).
+        event(new Registered($user));
 
         Auth::guard('web')->login($user);
         $request->session()->regenerate();

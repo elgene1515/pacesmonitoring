@@ -362,14 +362,21 @@ async function logout() {
                             </button>
 
                             <div id="user-menu" class="user-menu" role="menu" aria-label="Account">
-                                <div class="user-menu-header">
+                                <!-- The signed-in member: opens My account (own details, name / email / password). -->
+                                <RouterLink
+                                    :to="{ name: 'settings' }"
+                                    class="user-menu-header"
+                                    role="menuitem"
+                                    title="My account"
+                                    @click="closeUserMenu(); closeMenu();"
+                                >
                                     <span class="avatar avatar-lg" aria-hidden="true">{{ initials }}</span>
                                     <span class="user-menu-identity">
                                         <span class="user-menu-name">{{ auth.userName }}</span>
                                         <span class="user-menu-detail">{{ auth.user?.email }}</span>
                                         <span v-if="identityLine" class="user-menu-detail">{{ identityLine }}</span>
                                     </span>
-                                </div>
+                                </RouterLink>
 
                                 <!-- School admins: the school's plan and the code teachers use to join it. -->
                                 <div v-if="showSchool" class="user-menu-school">
@@ -398,11 +405,6 @@ async function logout() {
                                         </span>
                                     </div>
                                 </div>
-
-                                <RouterLink v-if="auth.isTeacher" :to="{ name: 'settings' }" class="user-menu-item" role="menuitem">
-                                    <AppIcon name="gear" />
-                                    Settings
-                                </RouterLink>
 
                                 <div class="user-menu-section">
                                     <span class="user-menu-label">Theme</span>
@@ -689,6 +691,15 @@ async function logout() {
     margin-bottom: 6px;
     padding: 10px 10px 12px;
     border-bottom: 1px solid var(--border);
+    border-radius: var(--radius) var(--radius) 0 0;
+    color: var(--text);
+}
+
+.user-menu-header:hover,
+.user-menu-header:focus-visible {
+    background: var(--bg);
+    color: var(--text);
+    text-decoration: none;
 }
 
 .user-menu-identity {
@@ -1093,7 +1104,9 @@ main.page {
     }
 
     .user-menu-header {
-        padding: 0 0 12px;
+        padding: 6px 8px 12px;
+        margin: 0 -8px 6px;
+        border-radius: var(--radius);
     }
 
     .user-menu-item,

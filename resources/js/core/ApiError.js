@@ -1,22 +1,28 @@
 /**
  * Normalised error thrown by ApiClient for every failed request.
  *
- *  - status  HTTP status code (0 when the request never reached the server)
- *  - errors  Laravel 422 field map: { field: [messages...] }
- *  - data    raw response body, when there was one
+ *  - status      HTTP status code (0 when the request never reached the server)
+ *  - errors      Laravel 422 field map: { field: [messages...] }
+ *  - data        raw response body, when there was one
+ *  - retryAfter  seconds until a 429 request may be retried (null otherwise)
  */
 export default class ApiError extends Error {
-    constructor(message, { status = 0, errors = {}, data = null, cause = null } = {}) {
+    constructor(message, { status = 0, errors = {}, data = null, retryAfter = null, cause = null } = {}) {
         super(message);
         this.name = 'ApiError';
         this.status = status;
         this.errors = errors && typeof errors === 'object' ? errors : {};
         this.data = data;
+        this.retryAfter = retryAfter;
         this.cause = cause;
     }
 
     get isValidation() {
         return this.status === 422;
+    }
+
+    get isRateLimited() {
+        return this.status === 429;
     }
 
     get isUnauthenticated() {
@@ -86,7 +92,17 @@ export default class ApiError extends Error {
             }
         }
 
-        return new ApiError(message, { status, errors, data, cause: err });
+        const retryAfter = status === 429 ? ApiError.parseRetryAfter(data, response.headers) : null;
+
+        return new ApiError(message, { status, errors, data, retryAfter, cause: err });
+    }
+
+    /** Seconds to wait, from the body's `retry_after` or the Retry-After header. */
+    static parseRetryAfter(data, headers) {
+        const raw = data?.retry_after ?? headers?.['retry-after'];
+        const seconds = Number.parseInt(raw, 10);
+
+        return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
     }
 
     static defaultMessage(status) {

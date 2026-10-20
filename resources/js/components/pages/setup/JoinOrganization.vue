@@ -318,7 +318,7 @@ function startOver() {
     font-size: 0.85rem;
 }
 
-.info {
+dl.info {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     gap: 14px 24px;

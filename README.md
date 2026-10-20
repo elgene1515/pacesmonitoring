@@ -35,7 +35,7 @@ local setup changes because of it.
 ## Roles
 
 Display names: the platform owner shows as **CEO**, platform staff as
-**Admin**, a school's administrator as **School admin**. Platform accounts
+**Admin**, a school's administrator as **School Admin**. Platform accounts
 list "PACES Monitoring System · Management" where members list their school
 and branch.
 
@@ -49,7 +49,9 @@ and branch.
 ### Sign-up and onboarding
 
 1. **Create account** – name, email, password, and *School administrator* or
-   *Teacher*.
+   *Teacher*. A verification email is sent; the account works right away and
+   **My account** shows the address as *Not verified* (with a resend button)
+   until the link is clicked.
 2. **Admin:** *Register your school* – school name, contact details, the
    branches (each named by the admin, with an optional address, one ticked as
    the main branch; the school's address is the main branch's) and a plan:
@@ -83,7 +85,28 @@ and the Home page totals follow the teacher's current year.
 | expired / cancelled / none | **Read-only**: everyone in the school can still view records, but nothing can be added or changed until the owner renews. |
 
 A trial or active subscription whose end date has passed counts as expired
-automatically (no scheduler involved). Plans carry a branch limit and
+automatically (no scheduler involved).
+
+## Accounts and security
+
+- **Sign in** is session based (Sanctum). After **5 failed attempts** for the
+  same email and IP the login is locked for **60 seconds**; the Sign in button
+  counts down and re-enables itself.
+- **Forgot password** (link under the password field): the address receives a
+  single-use reset link valid for 60 minutes. The answer is the same whether
+  or not the email is registered. School admins can still reset a teacher's
+  password from the teacher's page as a fallback.
+- **Email verification** is *soft*: sign-up (and changing the email later)
+  sends a verification link, the account is usable meanwhile, and My account
+  and the user pages show a **Verified / Not verified** badge with a resend
+  button. Nothing is blocked while unverified.
+- **My account** (click your name in the account menu; `/settings`, every
+  role): your details as an admin would see them, plus the forms to change
+  name / email and the password. Both forms require your **current
+  password**.
+- The reset and verification links are built from `APP_URL` and sent through
+  the `MAIL_*` mailer; locally (`MAIL_MAILER=log`) they land in
+  `storage/logs/laravel.log`. Plans carry a branch limit and
 optional admin, teacher and student limits, enforced when an admin adds a
 branch, a member is promoted to school admin, an admin admits a teacher or a
 teacher registers a student. Billing itself happens
@@ -175,19 +198,20 @@ tables and icon actions.
   date range it was requested in.
 - **PACE records** – assign PACEs per subject, school year and quarter;
   record issued date, date tested, score and the retake flag.
-- **Settings** – change your own name, email and password.
+- **My account** – your own details, change your name, email and password
+  (see *Accounts and security*).
 
 ## Account menu and theme (every account)
 
-The member's name in the top bar opens an account menu: who is signed in, **Settings** (teachers), the **theme** and **Sign out**. A school admin also sees the school's **plan** (under their name in the bar and in the menu, with its status) and the **school code** with a **Copy** button for handing out to teachers. On small screens the same menu sits at the bottom of the hamburger panel.
+The member's name in the top bar opens an account menu: who is signed in (the name / email row opens **My account**), the **theme** and **Sign out**. A school admin also sees the school's **plan** (under their name in the bar and in the menu, with its status) and the **school code** with a **Copy** button for handing out to teachers. On small screens the same menu sits at the bottom of the hamburger panel.
 
 The theme is **Light**, **Dark** or **System default** (follows the device and changes live with it). The choice is remembered per browser in `localStorage` (`paces.theme`) and applied before the page paints, so there is no flash. Colours are CSS variables in `resources/css/app.css` (`:root` for light, `:root[data-theme="dark"]` for dark); new components should use the variables instead of literal colours.
 
 ## Features (admin account)
 
-Admin navigation: **Home · Users · Students · School years · Organization**.
-School admins have no Settings button: they edit their own details and change
-their password (current password required) from their own page under Users.
+Admin navigation: **Home · Users · Students · PACE requests · School years · Organization**.
+School admins edit their own details from **My account** (account menu) or
+from their own page under Users; either way the current password is required.
 
 - **Home** – the teacher analytics across every teacher of the school, with
   Branch, Teacher, School year, Grade level, Subject and PACE filters (the
@@ -199,7 +223,8 @@ their password (current password required) from their own page under Users.
   members sit at the bottom of the **Organization** page instead of on Home
   (the platform owner's Analytics page keeps them).
 - **Users** – every member of the school (search, role and branch filters).
-  A member's page shows their school and branch, edits their details, resets
+  A member's page shows their school and branch and whether their email is
+  verified, edits their details, resets
   their password (with the admin's own password as confirmation), moves them
   to another branch or removes them from the school, and for teachers shows
   their grade levels, students and PACEs read-only, with view links into
@@ -241,8 +266,8 @@ their password (current password required) from their own page under Users.
 ## Features (owner account)
 
 Owner navigation: **Home · Organizations · Analytics · Users · Students · Plans · Staff**
-(Staff is owner-only; vice admins see the rest). Platform accounts have no
-Settings button: they edit their own account from Users like any other.
+(Staff is owner-only; vice admins see the rest). Platform accounts edit their
+own account from **My account** or from their own page under Users.
 
 - **Home** – organizations, subscriptions by status, read-only (lapsed)
   schools, admins / teachers / students, plan requests waiting, subscriptions
@@ -313,6 +338,14 @@ Settings button: they edit their own account from Users like any other.
    set for local development on `localhost:8000` and the Vite dev server on
    `localhost:5173`.
 
+   **Email.** `MAIL_MAILER=log` writes every email (password reset,
+   verification) to `storage/logs/laravel.log` instead of sending it — search
+   the log for `reset-password?` or `verify-email?` to get the link. The links
+   are built from `APP_URL`, so it must be the address you open the app from
+   (including the `/pacesmonitoring` path). For a real server point `MAIL_*`
+   at a transactional provider (Resend, Mailgun, Brevo, SES) and set
+   `MAIL_FROM_ADDRESS` to an address on a domain with SPF/DKIM records.
+
 3. **Install PHP dependencies and generate the app key** (skip the key step
    if `.env` already contains one):
 
@@ -328,7 +361,9 @@ Settings button: they edit their own account from Users like any other.
    ```
 
    The plans are inserted by the migrations; nothing else is seeded. Schools
-   register themselves and admins set up their own school years.
+   register themselves and admins set up their own school years. On a database
+   that predates email verification, the migrations also mark every existing
+   account as verified.
 
 5. **Install and build the frontend:**
 
@@ -374,9 +409,9 @@ Running `php artisan migrate` on a database from before the SaaS layer:
 
 Afterwards, sign in as the owner, open *Organizations → Default
 Organization*, rename it, and switch one of its teachers to **Admin** from the
-members list so the school has an administrator. A plain-SQL backup taken
-right before the migration is kept in the project root
-(`backup_before_saas_*.sql`).
+members list so the school has an administrator. The plain-SQL backups taken
+right before the migration are kept outside the repository (`private/`,
+ignored by git).
 
 ## Running the tests
 
@@ -397,13 +432,16 @@ app/
   Models/Concerns/         OwnedByUser (owner-scoped route-model binding)
   Http/Middleware/         EnsureUserHasRole (`role:admin,owner`), EnsureTenantAccess (`tenant`:
                            membership + read-only when the subscription lapsed)
-  Http/Controllers/Api/    Auth, Organization (setup + lookup), JoinRequest (teacher side), Profile,
-                           SchoolYear, GradeLevel, Subject, Student, Pace, assignments, Dashboard
+  Http/Controllers/Api/    Auth, PasswordReset, Verification, Organization (setup + lookup),
+                           JoinRequest (teacher side), Profile, SchoolYear, GradeLevel, Subject,
+                           Student, Pace, assignments, Dashboard
   Http/Controllers/Api/Admin/   Organization, Branch, JoinRequest, User, Student, GradeLevel,
                            SchoolYear, Pace, Dashboard (organization-scoped; owner may pass ?organization_id=)
   Http/Controllers/Api/Owner/   Dashboard, Organization, Subscription, Plan, User (role)
   Http/Controllers/Api/Concerns/ ResolvesOrganizationScope
-  Http/Requests/           Form requests grouped by domain, incl. Organization/, JoinRequest/, Owner/
+  Http/Requests/           Form requests grouped by domain, incl. Auth/ (login throttling, password
+                           reset), Profile/, Organization/, JoinRequest/, Owner/
+  Providers/AppServiceProvider  API rate limiter; builds the SPA reset / verification links from APP_URL
   Http/Resources/          JSON API resources
   Services/                OrganizationService, JoinRequestService, SubscriptionService, SchoolYearService,
                            GradeLevelService, StudentService, PaceService, PaceAssignmentService, DashboardService
@@ -421,13 +459,15 @@ resources/js/
   models/                  User (role helpers), Organization, Branch, Plan, Subscription, JoinRequest, ...
   services/                Auth, Tenant (setup / lookup / join), Admin, Owner, resource services
   stores/                  auth (role + setup state), scope (owner's organization), schoolYears, ...
-  components/pages/        Login, Register (role choice), setup/ (OrganizationSetup, JoinOrganization),
+  components/pages/        Login, Register (role choice), ForgotPassword, ResetPassword, VerifyEmail,
+                           Settings (My account), setup/ (OrganizationSetup, JoinOrganization),
                            teacher pages, admin/ (incl. AdminOrganization), owner/ (OwnerHome,
                            OwnerOrganizations, OwnerOrganizationDetail, OwnerPlans)
   router/                  Routes and guards (guest, setup, teacherOnly, requiresAdmin, requiresOwner)
 tests/
-  Feature/                 AuthTest, TenancyTest (sign-up, join requests, branches, subscriptions,
-                           owner), SchoolYearTest, StudentTest, PaceTest, GradeLevelTest, AssignmentTest, AdminTest
+  Feature/                 AuthTest (incl. login throttling), PasswordResetTest, EmailVerificationTest,
+                           TenancyTest (sign-up, join requests, branches, subscriptions, owner),
+                           SchoolYearTest, StudentTest, PaceTest, GradeLevelTest, AssignmentTest, AdminTest
 ```
 
 ## API overview
@@ -440,10 +480,14 @@ subscription (otherwise `403` with `code: subscription_inactive`).
 
 | Method | Path                               | Purpose |
 |--------|------------------------------------|---------|
-| POST   | `/register`                        | Sign up (`role` = `admin` or `teacher`) |
-| POST   | `/login`, `/logout`                | Session authentication |
-| GET    | `/user`                            | Current user with organization, branch, subscription and latest join request |
-| PUT    | `/profile`, `/password`            | Own name/email, own password |
+| POST   | `/register`                        | Sign up (`role` = `admin` or `teacher`); sends the verification email |
+| POST   | `/login`, `/logout`                | Session authentication; `/login` answers `429` + `retry_after` after 5 failures per email + IP |
+| POST   | `/forgot-password`                 | Email a reset link (`email`); same answer whether or not the address exists |
+| POST   | `/reset-password`                  | Set a new password (`token`, `email`, `password`, `password_confirmation`) |
+| GET    | `/email/verify/{id}/{hash}`        | Signed link from the verification email (`expires`, `signature`); no session needed |
+| POST   | `/email/verification-notification` | Resend the verification email to the signed-in user |
+| GET    | `/user`                            | Current user with `email_verified`, organization, branch, subscription and latest join request |
+| PUT    | `/profile`, `/password`            | Own name/email (`current_password` required; a new email is un-verified and re-sent a link), own password |
 | GET    | `/organizations/lookup?code=`      | A school's name and branches by code |
 | POST   | `/organizations`                   | Admin without a school: register it (`name`, `contact_email?`, `contact_phone?`, `branches[]` of `{name, address?, is_main?}`, `plan_id?`) |
 | POST   | `/join-requests`                   | Teacher without a school: ask to join (`organization_code`, `branch_id`, `message?`) |

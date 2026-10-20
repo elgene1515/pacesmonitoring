@@ -20,6 +20,7 @@ class UserResource extends JsonResource
             'id' => $this->id,
             'name' => $this->name,
             'email' => $this->email,
+            'email_verified' => $this->hasVerifiedEmail(),
             'role' => $this->roleEnum()->value,
             'is_owner' => $this->isOwner(),
             'is_admin' => $this->isAdmin(),

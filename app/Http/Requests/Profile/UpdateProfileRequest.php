@@ -23,6 +23,7 @@ class UpdateProfileRequest extends FormRequest
     public function rules(): array
     {
         return [
+            'current_password' => ['required', 'string', 'current_password:web'],
             'name' => ['required', 'string', 'max:255'],
             'email' => [
                 'required',
@@ -31,6 +32,19 @@ class UpdateProfileRequest extends FormRequest
                 'max:255',
                 Rule::unique('users', 'email')->ignore($this->user()?->id),
             ],
+        ];
+    }
+
+    /**
+     * Custom validation messages.
+     *
+     * @return array<string, string>
+     */
+    public function messages(): array
+    {
+        return [
+            'current_password.required' => 'Enter your current password to save these changes.',
+            'current_password.current_password' => 'The current password is incorrect.',
         ];
     }
 }

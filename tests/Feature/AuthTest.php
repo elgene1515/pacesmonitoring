@@ -99,6 +99,70 @@ class AuthTest extends ApiTestCase
             ->assertJsonValidationErrors(['email', 'password']);
     }
 
+    public function test_repeated_failed_logins_are_rate_limited(): void
+    {
+        User::factory()->create([
+            'email' => 'user@example.com',
+            'password' => Hash::make('password123'),
+        ]);
+
+        for ($i = 0; $i < 5; $i++) {
+            $this->postJson('/api/login', [
+                'email' => 'user@example.com',
+                'password' => 'wrong-password',
+            ])->assertUnprocessable();
+        }
+
+        $response = $this->postJson('/api/login', [
+            'email' => 'user@example.com',
+            'password' => 'wrong-password',
+        ])->assertTooManyRequests();
+
+        $this->assertStringContainsString('Too many login attempts', $response->json('message'));
+        $this->assertGreaterThan(0, $response->json('retry_after'));
+        $this->assertSame((string) $response->json('retry_after'), $response->headers->get('Retry-After'));
+
+        // The correct password is also blocked while locked out.
+        $this->postJson('/api/login', [
+            'email' => 'user@example.com',
+            'password' => 'password123',
+        ])->assertTooManyRequests();
+
+        $this->assertGuest('web');
+    }
+
+    public function test_a_successful_login_clears_prior_failed_attempts(): void
+    {
+        User::factory()->create([
+            'email' => 'user@example.com',
+            'password' => Hash::make('password123'),
+        ]);
+
+        for ($i = 0; $i < 4; $i++) {
+            $this->postJson('/api/login', [
+                'email' => 'user@example.com',
+                'password' => 'wrong-password',
+            ])->assertUnprocessable();
+        }
+
+        $this->postJson('/api/login', [
+            'email' => 'user@example.com',
+            'password' => 'password123',
+        ])->assertOk();
+
+        $this->forgetGuards();
+        $this->postJson('/api/logout');
+
+        // One more wrong attempt right after shouldn't be locked out, since
+        // the successful login reset the counter.
+        $this->postJson('/api/login', [
+            'email' => 'user@example.com',
+            'password' => 'wrong-password',
+        ])
+            ->assertUnprocessable()
+            ->assertJsonPath('errors.email.0', 'These credentials do not match our records.');
+    }
+
     public function test_an_authenticated_user_can_fetch_their_profile(): void
     {
         $user = $this->signIn();
@@ -152,7 +216,7 @@ class AuthTest extends ApiTestCase
     {
         $user = $this->signIn();
 
-        $this->putJson('/api/profile', ['name' => 'New Name', 'email' => 'new-email@example.com'])
+        $this->putJson('/api/profile', ['name' => 'New Name', 'email' => 'new-email@example.com', 'current_password' => 'password'])
             ->assertOk()
             ->assertJsonPath('data.id', $user->id)
             ->assertJsonPath('data.name', 'New Name')
@@ -172,18 +236,29 @@ class AuthTest extends ApiTestCase
 
         $this->putJson('/api/profile', ['name' => '', 'email' => 'not-an-email'])
             ->assertUnprocessable()
-            ->assertJsonValidationErrors(['name', 'email']);
+            ->assertJsonValidationErrors(['name', 'email', 'current_password']);
 
-        $this->putJson('/api/profile', ['name' => 'Someone', 'email' => $other->email])
+        $this->putJson('/api/profile', ['name' => 'Someone', 'email' => $other->email, 'current_password' => 'password'])
             ->assertUnprocessable()
             ->assertJsonValidationErrors(['email']);
+    }
+
+    public function test_updating_the_profile_requires_the_correct_current_password(): void
+    {
+        $user = $this->signIn(User::factory()->create(['name' => 'Original', 'email' => 'me@example.com']));
+
+        $this->putJson('/api/profile', ['name' => 'Hijacked', 'email' => 'attacker@example.com', 'current_password' => 'wrong-password'])
+            ->assertUnprocessable()
+            ->assertJsonPath('errors.current_password.0', 'The current password is incorrect.');
+
+        $this->assertDatabaseHas('users', ['id' => $user->id, 'name' => 'Original', 'email' => 'me@example.com']);
     }
 
     public function test_a_user_can_keep_their_own_email_when_updating_their_profile(): void
     {
         $user = $this->signIn(User::factory()->create(['email' => 'me@example.com']));
 
-        $this->putJson('/api/profile', ['name' => 'Updated Name', 'email' => 'me@example.com'])
+        $this->putJson('/api/profile', ['name' => 'Updated Name', 'email' => 'me@example.com', 'current_password' => 'password'])
             ->assertOk()
             ->assertJsonPath('data.email', 'me@example.com');
     }

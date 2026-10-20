@@ -10,11 +10,11 @@ export const ROLES = Object.freeze({
     TEACHER: 'teacher',
 });
 
-/** Display names: the platform owner is the CEO, platform staff are Admins, a school's administrator is a School admin. */
+/** Display names: the platform owner is the CEO, platform staff are Admins, a school's administrator is a School Admin. */
 export const ROLE_LABELS = Object.freeze({
     owner: 'CEO',
     vice_admin: 'Admin',
-    admin: 'School admin',
+    admin: 'School Admin',
     teacher: 'Teacher',
 });
 
@@ -28,7 +28,7 @@ export const PLATFORM_ROLES = Object.freeze([ROLES.OWNER, ROLES.VICE_ADMIN]);
 /**
  * A user account.
  *
- * API shape: {id, name, email, role, is_owner, is_admin, is_teacher, is_platform, organization_suspended,
+ * API shape: {id, name, email, email_verified, role, is_owner, is_admin, is_teacher, is_platform, organization_suspended,
  *             organization_id, branch_id, current_school_year_id, organization?, branch?, join_request?, created_at}
  *
  *  - owner:      the platform owner (every organization, plans, subscriptions, staff)
@@ -41,6 +41,7 @@ export default class User {
         id = null,
         name = '',
         email = '',
+        emailVerified = true,
         role = ROLES.TEACHER,
         organizationId = null,
         branchId = null,
@@ -54,6 +55,8 @@ export default class User {
         this.id = id;
         this.name = name;
         this.email = email;
+        /** False until the user has clicked the link emailed at sign-up (or after changing their address). */
+        this.emailVerified = emailVerified;
         this.role = role;
         this.organizationId = organizationId;
         this.branchId = branchId;
@@ -189,6 +192,7 @@ export default class User {
             id: json.id ?? null,
             name: json.name ?? '',
             email: json.email ?? '',
+            emailVerified: json.email_verified ?? true,
             role: json.role ?? (json.is_owner ? ROLES.OWNER : json.is_admin ? ROLES.ADMIN : ROLES.TEACHER),
             organizationId: json.organization_id ?? null,
             branchId: json.branch_id ?? null,

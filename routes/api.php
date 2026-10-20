@@ -27,12 +27,14 @@ use App\Http\Controllers\Api\Owner\UserController as OwnerUserController;
 use App\Http\Controllers\Api\PaceAssignmentController;
 use App\Http\Controllers\Api\PaceController;
 use App\Http\Controllers\Api\PaceRequestController;
+use App\Http\Controllers\Api\PasswordResetController;
 use App\Http\Controllers\Api\PlanController;
 use App\Http\Controllers\Api\ProfileController;
 use App\Http\Controllers\Api\SchoolYearController;
 use App\Http\Controllers\Api\StudentAssignmentController;
 use App\Http\Controllers\Api\StudentController;
 use App\Http\Controllers\Api\SubjectController;
+use App\Http\Controllers\Api\VerificationController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -67,12 +69,26 @@ use Illuminate\Support\Facades\Route;
 Route::post('/register', [AuthController::class, 'register'])->name('api.register');
 Route::post('/login', [AuthController::class, 'login'])->name('api.login');
 
+// Self-service password reset: a link is emailed, then the token sets a new password.
+Route::middleware('throttle:6,1')->group(function (): void {
+    Route::post('/forgot-password', [PasswordResetController::class, 'forgot'])->name('api.password.forgot');
+    Route::post('/reset-password', [PasswordResetController::class, 'reset'])->name('api.password.reset');
+});
+
+// Emailed verification link (signed, so no session is required). The route name is what the signature is computed for.
+Route::get('/email/verify/{id}/{hash}', [VerificationController::class, 'verify'])
+    ->middleware(['signed:relative', 'throttle:6,1'])
+    ->name('verification.verify');
+
 Route::middleware('auth:sanctum')->group(function (): void {
     Route::post('/logout', [AuthController::class, 'logout'])->name('api.logout');
     Route::get('/user', [AuthController::class, 'user'])->name('api.user');
 
     Route::put('/profile', [ProfileController::class, 'update'])->name('api.profile.update');
     Route::put('/password', [ProfileController::class, 'updatePassword'])->name('api.password.update');
+    Route::post('/email/verification-notification', [VerificationController::class, 'resend'])
+        ->middleware('throttle:6,1')
+        ->name('verification.send');
 
     // The plans a school can pick (sign-up, plan change requests).
     Route::get('/plans', [PlanController::class, 'index'])->name('api.plans.index');

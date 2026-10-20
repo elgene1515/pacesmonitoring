@@ -292,7 +292,7 @@ class AdminScopeTest extends ApiTestCase
     {
         $this->assertSame('CEO', \App\Enums\Role::Owner->label());
         $this->assertSame('Admin', \App\Enums\Role::ViceAdmin->label());
-        $this->assertSame('School admin', \App\Enums\Role::Admin->label());
+        $this->assertSame('School Admin', \App\Enums\Role::Admin->label());
         $this->assertSame('Teacher', \App\Enums\Role::Teacher->label());
         $this->assertInstanceOf(Plan::class, Plan::query()->first());
     }

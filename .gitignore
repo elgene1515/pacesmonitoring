@@ -15,8 +15,6 @@
 /auth.json
 /node_modules
 /public/build
-/database/*.sqlite
-backup_before_saas_*.sql
 /public/fonts-manifest.dev.json
 /public/hot
 /public/storage
@@ -27,3 +25,6 @@ _ide_helper.php
 Homestead.json
 Homestead.yaml
 Thumbs.db
+
+# Local-only notes and database dumps (never committed)
+/private

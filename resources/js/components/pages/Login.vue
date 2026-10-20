@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useAuthStore } from '../../stores/auth';
 import { homeRouteFor, resolveRedirect } from '../../router';
@@ -17,6 +17,40 @@ const submitting = ref(false);
 const showPassword = ref(false);
 
 const redirectTarget = computed(() => resolveRedirect(route.query.redirect, auth.user));
+
+// Lockout countdown after too many failed attempts (server answers 429 + retry_after).
+const lockoutSeconds = ref(0);
+let lockoutUntil = 0;
+let lockoutTimer = null;
+
+const lockedOut = computed(() => lockoutSeconds.value > 0);
+const lockoutMessage = computed(() => (
+    `Too many login attempts. Please try again in ${lockoutSeconds.value} second${lockoutSeconds.value === 1 ? '' : 's'}.`
+));
+
+function tickLockout() {
+    lockoutSeconds.value = Math.max(0, Math.ceil((lockoutUntil - Date.now()) / 1000));
+
+    if (lockoutSeconds.value === 0) {
+        clearLockout();
+    }
+}
+
+function startLockout(seconds) {
+    lockoutUntil = Date.now() + seconds * 1000;
+    clearInterval(lockoutTimer);
+    lockoutTimer = setInterval(tickLockout, 1000);
+    tickLockout();
+}
+
+function clearLockout() {
+    clearInterval(lockoutTimer);
+    lockoutTimer = null;
+    lockoutUntil = 0;
+    lockoutSeconds.value = 0;
+}
+
+onBeforeUnmount(clearLockout);
 
 function validate() {
     const errors = {};
@@ -37,7 +71,7 @@ function validate() {
 async function submit() {
     formError.value = '';
 
-    if (!validate()) {
+    if (lockedOut.value || !validate()) {
         return;
     }
 
@@ -48,7 +82,10 @@ async function submit() {
         // A user who still owes an onboarding step is sent there regardless of ?redirect=.
         await router.replace(user?.needsSetup ? homeRouteFor(user) : redirectTarget.value);
     } catch (err) {
-        if (err?.isValidation) {
+        if (err?.isRateLimited) {
+            fieldErrors.value = {};
+            startLockout(err.retryAfter ?? 60);
+        } else if (err?.isValidation) {
             fieldErrors.value = err.errors;
             formError.value = err.hasFieldErrors ? '' : err.message;
         } else {
@@ -67,7 +104,8 @@ async function submit() {
             <h1>Sign in</h1>
 
             <form class="form" novalidate @submit.prevent="submit">
-                <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
+                <p v-if="lockedOut" class="form-error" role="alert" aria-live="polite">{{ lockoutMessage }}</p>
+                <p v-else-if="formError" class="form-error" role="alert">{{ formError }}</p>
 
                 <AppField label="Email" for="login-email" :error="fieldErrors.email" required>
                     <input
@@ -111,8 +149,14 @@ async function submit() {
                     </div>
                 </AppField>
 
-                <button type="submit" class="btn submit" :disabled="submitting">
-                    {{ submitting ? 'Signing in…' : 'Sign in' }}
+                <p class="forgot">
+                    <RouterLink :to="{ name: 'forgot-password' }">Forgot password?</RouterLink>
+                </p>
+
+                <button type="submit" class="btn submit" :disabled="submitting || lockedOut">
+                    <template v-if="submitting">Signing in…</template>
+                    <template v-else-if="lockedOut">Try again in {{ lockoutSeconds }}s</template>
+                    <template v-else>Sign in</template>
                 </button>
             </form>
 
@@ -163,6 +207,12 @@ h1 {
     color: var(--danger);
     background: rgba(var(--danger-rgb), 0.06);
     font-size: 0.92rem;
+}
+
+.forgot {
+    margin: -6px 0 0;
+    text-align: right;
+    font-size: 0.88rem;
 }
 
 .password-field {

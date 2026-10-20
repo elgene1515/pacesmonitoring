@@ -31,6 +31,22 @@ const loadError = ref('');
 
 const isSelf = computed(() => Boolean(user.value) && auth.user?.id === user.value.id);
 
+/* ---------- Own email verification: only the account holder can ask for a new link ---------- */
+
+const resendingVerification = ref(false);
+
+async function resendVerification() {
+    resendingVerification.value = true;
+
+    try {
+        notify.success(await auth.resendVerification());
+    } catch (err) {
+        notify.error(err?.message ?? 'Unable to send a new verification link right now.');
+    } finally {
+        resendingVerification.value = false;
+    }
+}
+
 /* ---------- Membership: branch, role, removal ---------- */
 
 const branches = ref([]);
@@ -685,7 +701,19 @@ onBeforeUnmount(() => {
                         </div>
                         <div class="info-item">
                             <dt>Email</dt>
-                            <dd>{{ user.email }}</dd>
+                            <dd class="email">
+                                <span>{{ user.email }}</span>
+                                <StatusBadge :tone="user.emailVerified ? 'ok' : 'warn'">{{ user.emailVerified ? 'Verified' : 'Not verified' }}</StatusBadge>
+                                <button
+                                    v-if="isSelf && !user.emailVerified"
+                                    type="button"
+                                    class="btn btn-link btn-sm"
+                                    :disabled="resendingVerification"
+                                    @click="resendVerification"
+                                >
+                                    {{ resendingVerification ? 'Sending…' : 'Resend link' }}
+                                </button>
+                            </dd>
                         </div>
                         <div class="info-item">
                             <dt>Role</dt>
@@ -1357,7 +1385,8 @@ onBeforeUnmount(() => {
     border-radius: 4px;
 }
 
-.info {
+/* `dl.` keeps this off StatusBadge, whose "info" tone class would otherwise match too. */
+dl.info {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
     gap: 14px 24px;
@@ -1372,6 +1401,13 @@ onBeforeUnmount(() => {
 
 .info-item dd {
     margin: 0;
+}
+
+.info-item .email {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
 }
 
 .pair > .card {

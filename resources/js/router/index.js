@@ -4,6 +4,9 @@ import { APP_NAME } from '../core/constants';
 
 const Login = () => import('../components/pages/Login.vue');
 const Register = () => import('../components/pages/Register.vue');
+const ForgotPassword = () => import('../components/pages/ForgotPassword.vue');
+const ResetPassword = () => import('../components/pages/ResetPassword.vue');
+const VerifyEmail = () => import('../components/pages/VerifyEmail.vue');
 const OrganizationSetup = () => import('../components/pages/setup/OrganizationSetup.vue');
 const JoinOrganization = () => import('../components/pages/setup/JoinOrganization.vue');
 const Suspended = () => import('../components/pages/setup/Suspended.vue');
@@ -57,6 +60,25 @@ export const routes = [
         name: 'register',
         component: Register,
         meta: { guest: true, title: 'Create account', hideNav: true },
+    },
+    {
+        path: '/forgot-password',
+        name: 'forgot-password',
+        component: ForgotPassword,
+        meta: { guest: true, title: 'Forgot password', hideNav: true },
+    },
+    {
+        path: '/reset-password',
+        name: 'reset-password',
+        component: ResetPassword,
+        meta: { guest: true, title: 'Reset password', hideNav: true },
+    },
+    {
+        // Opened from the verification email; works signed in or not.
+        path: '/verify-email',
+        name: 'verify-email',
+        component: VerifyEmail,
+        meta: { title: 'Verify email', hideNav: true },
     },
     {
         path: '/setup/organization',
@@ -146,7 +168,7 @@ export const routes = [
         path: '/settings',
         name: 'settings',
         component: Settings,
-        meta: { requiresAuth: true, title: 'Settings' },
+        meta: { requiresAuth: true, title: 'My account' },
     },
     {
         path: '/admin',
@@ -319,6 +341,10 @@ router.beforeEach(async (to) => {
 
     const user = auth.user;
 
+    if (to.name === 'verify-email') {
+        return true;
+    }
+
     // Onboarding first: until an admin has registered their school, or a teacher has been
     // admitted into one, the only pages are the setup step (and Settings).
     if (user.needsSetup) {
@@ -339,11 +365,6 @@ router.beforeEach(async (to) => {
     }
 
     if (to.meta.ownerOnly && !user.isOwner) {
-        return homeRouteFor(user);
-    }
-
-    // Platform staff and school admins manage their own account from Users; Settings is for teachers.
-    if (to.name === 'settings' && !user.isTeacher) {
         return homeRouteFor(user);
     }
 

@@ -60,7 +60,7 @@ enum Role: string
         return match ($this) {
             self::Owner => 'CEO',
             self::ViceAdmin => 'Admin',
-            self::Admin => 'School admin',
+            self::Admin => 'School Admin',
             self::Teacher => 'Teacher',
         };
     }

@@ -962,7 +962,7 @@ onMounted(load);
 }
 
 /* Definition grid; cells shrink and wrap instead of overflowing the card. */
-.info {
+dl.info {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
     gap: 14px 24px;

@@ -39,6 +39,10 @@ function resetDataStores() {
  *  refresh()         re-fetch /api/user (after setup / join / subscription changes) -> Promise<User|null>
  *  login({email, password})                                        -> Promise<User>  (throws ApiError)
  *  register({name, email, password, password_confirmation, role})  -> Promise<User>  (throws ApiError)
+ *  forgotPassword(email)                                           -> Promise<void>  (throws ApiError)
+ *  resetPassword({token, email, password, password_confirmation})  -> Promise<void>  (throws ApiError)
+ *  verifyEmail({id, hash, expires, signature})                     -> Promise<string> message; refreshes the user when it is theirs
+ *  resendVerification()                                            -> Promise<string> message (throws ApiError)
  *  setupOrganization(payload)                                      -> Promise<User>  (throws ApiError)
  *  submitJoinRequest(payload) / cancelJoinRequest()                -> Promise<User>  (throws ApiError)
  *  logout()          -> Promise<void>; always clears local user, rethrows non-401 failures
@@ -146,6 +150,29 @@ export const useAuthStore = defineStore('auth', () => {
         }
     }
 
+    async function forgotPassword(email) {
+        await authService.forgotPassword(email);
+    }
+
+    async function resetPassword(payload) {
+        await authService.resetPassword(payload);
+    }
+
+    async function verifyEmail(params) {
+        const body = await authService.verifyEmail(params);
+
+        if (user.value && Number(params.id) === user.value.id) {
+            await refresh();
+        }
+
+        return body?.message ?? 'Your email address has been verified.';
+    }
+
+    async function resendVerification() {
+        const body = await authService.resendVerification();
+        return body?.message ?? 'A new verification link has been sent.';
+    }
+
     async function setupOrganization(payload) {
         const updated = await tenantService.setupOrganization(payload);
         setUser(updated);
@@ -217,6 +244,10 @@ export const useAuthStore = defineStore('auth', () => {
         refresh,
         login,
         register,
+        forgotPassword,
+        resetPassword,
+        verifyEmail,
+        resendVerification,
         setupOrganization,
         submitJoinRequest,
         cancelJoinRequest,

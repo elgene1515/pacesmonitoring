@@ -30,6 +30,38 @@ export default class AuthService {
     }
 
     /**
+     * POST /api/forgot-password {email} -> {message} (same answer whether or not the email is registered)
+     */
+    async forgotPassword(email) {
+        await this.api.ensureCsrf();
+        return this.api.post('/forgot-password', { email });
+    }
+
+    /**
+     * POST /api/reset-password {token, email, password, password_confirmation} -> {message}
+     */
+    async resetPassword(payload) {
+        await this.api.ensureCsrf();
+        return this.api.post('/reset-password', payload);
+    }
+
+    /**
+     * GET /api/email/verify/{id}/{hash}?expires&signature -> {message}
+     * The parameters come straight from the emailed link; no session is needed.
+     */
+    async verifyEmail({ id, hash, expires, signature }) {
+        return this.api.get(`/email/verify/${encodeURIComponent(id)}/${encodeURIComponent(hash)}`, { expires, signature });
+    }
+
+    /**
+     * POST /api/email/verification-notification -> {message}
+     */
+    async resendVerification() {
+        await this.api.ensureCsrf();
+        return this.api.post('/email/verification-notification');
+    }
+
+    /**
      * POST /api/logout -> void
      */
     async logout() {
