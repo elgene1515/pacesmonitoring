@@ -3,6 +3,7 @@
 namespace App\Http\Requests\Auth;
 
 use App\Enums\Role;
+use App\Support\PersonDetails;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Password;
@@ -28,12 +29,31 @@ class RegisterRequest extends FormRequest
      */
     public function rules(): array
     {
-        return [
-            'name' => ['required', 'string', 'max:255'],
+        return PersonDetails::rules() + [
             'email' => ['required', 'string', 'email', 'max:255', 'unique:users,email'],
             'password' => ['required', 'string', 'confirmed', Password::min(8)],
             'role' => ['required', 'string', Rule::in(Role::registrable())],
+            // The Terms of Service and Privacy Policy have to be accepted to sign up.
+            'terms' => ['accepted'],
         ];
+    }
+
+    /**
+     * The name parts and contact details, trimmed.
+     *
+     * @return array<string, string|null>
+     */
+    public function person(): array
+    {
+        return PersonDetails::clean($this->validated());
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public function attributes(): array
+    {
+        return PersonDetails::attributes() + ['terms' => 'Terms of Service and Privacy Policy'];
     }
 
     /**
@@ -43,7 +63,8 @@ class RegisterRequest extends FormRequest
      */
     public function messages(): array
     {
-        return [
+        return PersonDetails::messages() + [
+            'terms.accepted' => 'Please accept the Terms of Service and Privacy Policy to create an account.',
             'role.required' => 'Please choose whether you are registering as an administrator or as a teacher.',
             'role.in' => 'Please choose whether you are registering as an administrator or as a teacher.',
         ];

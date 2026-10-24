@@ -12,6 +12,7 @@ import { notify } from './notifications';
  *  pendingCount         computed<number>
  *  fetch()              reload items (toasts on failure) -> Promise<PaceRequest[]>
  *  create(payload)      -> Promise<PaceRequest>  (throws ApiError)
+ *  createMany(payload)  -> Promise<PaceRequest[]> (one request per item; throws ApiError)
  *  update(id, payload)  -> Promise<PaceRequest>  (throws ApiError)
  *  cancel(id)           withdraw a pending request -> Promise<void> (throws ApiError)
  *  pendingFor(paceId)   -> PaceRequest|undefined (the pending request of one PACE, from the loaded list)
@@ -78,6 +79,12 @@ export const usePaceRequestsStore = defineStore('paceRequests', () => {
         return request;
     }
 
+    async function createMany(payload) {
+        const created = await paceRequestService.createMany(payload);
+        created.forEach(upsert);
+        return created;
+    }
+
     async function update(id, payload) {
         const request = await paceRequestService.update(id, payload);
         upsert(request);
@@ -104,6 +111,7 @@ export const usePaceRequestsStore = defineStore('paceRequests', () => {
         pendingCount,
         fetch,
         create,
+        createMany,
         update,
         cancel,
         pendingFor,

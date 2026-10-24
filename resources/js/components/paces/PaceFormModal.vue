@@ -1,26 +1,33 @@
 <script setup>
 import { computed, ref, watch } from 'vue';
-import { usePacesStore } from '../../stores/paces';
+import { adminService } from '../../services';
 import { notify } from '../../stores/notifications';
 import AppModal from '../ui/AppModal.vue';
 import PaceForm from './PaceForm.vue';
 
 /**
- * Modal wrapper around PaceForm that talks to the paces store.
+ * Admin: modal wrapper around PaceForm that talks to the admin API.
  *
  *  props   modelValue  Boolean      open state (v-model)
  *          pace        Pace|null    record to edit; null registers a new PACE
+ *          branches    Branch[]     the school's branches
+ *          branchId    Number|null  branch preselected for a new PACE
+ *          organizations Organization[]  platform owner only: a searchable school picker comes before the branch
+ *          organizationId Number|String|null  school preselected for a new PACE
  *  emits   update:modelValue(Boolean)
- *          saved(Pace)
+ *          saved(Pace|Pace[])
  */
 const props = defineProps({
     modelValue: { type: Boolean, default: false },
     pace: { type: Object, default: null },
+    branches: { type: Array, default: () => [] },
+    branchId: { type: [Number, String], default: null },
+    organizations: { type: Array, default: () => [] },
+    organizationId: { type: [Number, String], default: null },
 });
 
 const emit = defineEmits(['update:modelValue', 'saved']);
 
-const paces = usePacesStore();
 const submitting = ref(false);
 const errors = ref({});
 
@@ -50,8 +57,8 @@ async function save(model) {
 
     try {
         const saved = isEdit.value
-            ? await paces.update(props.pace.id, model)
-            : await paces.create(model);
+            ? await adminService.updatePace(props.pace.id, model)
+            : await adminService.createPace(model);
 
         notify.success(isEdit.value ? 'PACE updated.' : `PACE ${saved.label} registered.`);
         emit('saved', saved);
@@ -67,14 +74,14 @@ async function save(model) {
     }
 }
 
-async function saveRange({ name, start, end, stock }) {
+async function saveRange(payload) {
     submitting.value = true;
     errors.value = {};
 
     try {
-        const created = await paces.createRange({ name, start, end, stock });
+        const created = await adminService.createPaceRange(payload);
 
-        notify.success(`${created.length} PACEs registered: ${name} #${start}–${end}.`);
+        notify.success(`${created.length} PACEs registered: ${payload.name} #${payload.start}–${payload.end}.`);
         emit('saved', created);
         emit('update:modelValue', false);
     } catch (err) {
@@ -101,6 +108,10 @@ async function saveRange({ name, start, end, stock }) {
         <PaceForm
             v-if="modelValue"
             :pace="pace"
+            :branches="branches"
+            :branch-id="branchId"
+            :organizations="organizations"
+            :organization-id="organizationId"
             :submitting="submitting"
             :errors="errors"
             submit-text="Register PACE"

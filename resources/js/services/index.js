@@ -3,6 +3,7 @@ import ApiClient from '../core/ApiClient';
 import AuthService from './AuthService';
 import TenantService from './TenantService';
 import ReferenceService from './ReferenceService';
+import TeachingService from './TeachingService';
 import SchoolYearService from './SchoolYearService';
 import StudentService from './StudentService';
 import PaceService from './PaceService';
@@ -18,6 +19,7 @@ export const api = new ApiClient(axios);
 export const authService = new AuthService(api);
 export const tenantService = new TenantService(api);
 export const referenceService = new ReferenceService(api);
+export const teachingService = new TeachingService(api);
 export const schoolYearService = new SchoolYearService(api);
 export const studentService = new StudentService(api);
 export const paceService = new PaceService(api);
@@ -32,6 +34,7 @@ export default {
     authService,
     tenantService,
     referenceService,
+    teachingService,
     schoolYearService,
     studentService,
     paceService,

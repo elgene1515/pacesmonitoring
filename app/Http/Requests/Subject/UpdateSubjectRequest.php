@@ -15,15 +15,14 @@ class UpdateSubjectRequest extends StoreSubjectRequest
      */
     public function rules(): array
     {
-        $subject = $this->route('subject');
-        $gradeLevelId = $subject instanceof Subject ? (int) $subject->grade_level_id : 0;
+        $subject = Subject::query()->find((int) $this->route('subject'));
 
         return [
             'name' => [
                 'required',
                 'string',
                 'max:100',
-                Rule::unique('subjects', 'name')->where('grade_level_id', $gradeLevelId)->ignore($subject),
+                Rule::unique('subjects', 'name')->where('grade_level_id', (int) $subject?->grade_level_id)->ignore($subject),
             ],
             'sort_order' => ['nullable', 'integer', 'min:0', 'max:65535'],
         ];

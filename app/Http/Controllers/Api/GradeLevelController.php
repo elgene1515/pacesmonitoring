@@ -3,21 +3,16 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\GradeLevel\StoreGradeLevelRequest;
-use App\Http\Requests\GradeLevel\UpdateGradeLevelRequest;
 use App\Http\Resources\GradeLevelResource;
 use App\Models\GradeLevel;
 use App\Services\GradeLevelService;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
-use Illuminate\Http\Response;
 use Illuminate\Validation\Rule;
 
 /**
- * Grade levels belong to the user who created them and are registered under
- * one school year; every action here only ever sees the current user's
- * levels (route binding is owner-scoped).
+ * A teacher's view of the curriculum: the grade levels they teach in (route
+ * binding is limited to those), read-only — admins set the curriculum up.
  */
 class GradeLevelController extends Controller
 {
@@ -26,8 +21,9 @@ class GradeLevelController extends Controller
     }
 
     /**
-     * The current user's grade levels with their subjects, newest school year
-     * first. `?school_year_id=` limits the list to one school year.
+     * The grade levels the teacher teaches in, with the sections they teach
+     * and every subject, newest school year first. `?school_year_id=` limits
+     * the list to one school year.
      */
     public function index(Request $request): AnonymousResourceCollection
     {
@@ -45,42 +41,37 @@ class GradeLevelController extends Controller
     }
 
     /**
-     * Create a grade level for the current user under one of their school years.
+     * The whole curriculum of the teacher's branch: every grade level with
+     * every section and who teaches what, so a teacher can find an open slot
+     * to ask for. `?school_year_id=` limits it to one school year.
      */
-    public function store(StoreGradeLevelRequest $request): JsonResponse
+    public function branch(Request $request): AnonymousResourceCollection
     {
-        $gradeLevel = $this->gradeLevels->create($request->user(), $request->gradeLevelData());
+        $user = $request->user();
 
-        return (new GradeLevelResource($gradeLevel))
-            ->response()
-            ->setStatusCode(Response::HTTP_CREATED);
-    }
+        $filters = $request->validate([
+            'school_year_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('school_years', 'id')->where('organization_id', $user->organization_id),
+            ],
+        ]);
 
-    /**
-     * A single grade level with its subjects and every PACE record filed under them.
-     */
-    public function show(GradeLevel $gradeLevel): GradeLevelResource
-    {
-        return new GradeLevelResource($this->gradeLevels->detail($gradeLevel));
-    }
+        if ($user->branch_id === null) {
+            return GradeLevelResource::collection([]);
+        }
 
-    /**
-     * Rename or reorder a grade level.
-     */
-    public function update(UpdateGradeLevelRequest $request, GradeLevel $gradeLevel): GradeLevelResource
-    {
-        return new GradeLevelResource(
-            $this->gradeLevels->update($gradeLevel, $request->gradeLevelData())
+        return GradeLevelResource::collection(
+            $this->gradeLevels->listForBranch((int) $user->branch_id, $filters)
         );
     }
 
     /**
-     * Remove a grade level and its subjects. Levels with students are refused (422).
+     * A grade level with its subjects, the sections the teacher teaches and
+     * the records of their students.
      */
-    public function destroy(GradeLevel $gradeLevel): Response
+    public function show(Request $request, GradeLevel $gradeLevel): GradeLevelResource
     {
-        $this->gradeLevels->delete($gradeLevel);
-
-        return response()->noContent();
+        return new GradeLevelResource($this->gradeLevels->detail($gradeLevel, $request->user()));
     }
 }

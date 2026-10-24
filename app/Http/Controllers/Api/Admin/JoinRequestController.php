@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Admin;
 use App\Enums\JoinRequestStatus;
 use App\Http\Controllers\Api\Concerns\ResolvesOrganizationScope;
 use App\Http\Controllers\Controller;
+use App\Enums\Role;
 use App\Http\Requests\JoinRequest\DeclineJoinRequestRequest;
 use App\Http\Resources\JoinRequestResource;
 use App\Models\JoinRequest;
@@ -45,7 +46,14 @@ class JoinRequestController extends Controller
     {
         $this->assertInScope($request, $joinRequest->organization_id);
 
-        return new JoinRequestResource($this->joinRequests->accept($joinRequest, $request->user()));
+        // The admin may admit the person as a teacher or an administrator (default: what they asked for).
+        $data = $request->validate([
+            'role' => ['nullable', 'string', Rule::in([Role::Teacher->value, Role::Admin->value])],
+        ]);
+
+        $as = isset($data['role']) ? Role::from($data['role']) : null;
+
+        return new JoinRequestResource($this->joinRequests->accept($joinRequest, $request->user(), $as));
     }
 
     /**

@@ -23,6 +23,7 @@ class PaceRequest extends Model
      */
     protected $fillable = [
         'organization_id',
+        'branch_id',
         'user_id',
         'pace_id',
         'pace_number',
@@ -43,6 +44,7 @@ class PaceRequest extends Model
      */
     protected $casts = [
         'organization_id' => 'integer',
+        'branch_id' => 'integer',
         'user_id' => 'integer',
         'pace_id' => 'integer',
         'quantity' => 'integer',
@@ -63,8 +65,9 @@ class PaceRequest extends Model
     }
 
     /**
-     * True while the request points at one of the teacher's registered PACEs
-     * (marking it given then adds the booklets to that PACE's stock).
+     * True while the request points at a PACE already in the branch's catalog.
+     * An unlinked request names a new number: approving it registers the PACE
+     * in the catalog as well.
      */
     public function isLinked(): bool
     {
@@ -77,6 +80,14 @@ class PaceRequest extends Model
     }
 
     /**
+     * The branch whose catalog and pool the request is about.
+     */
+    public function branch(): BelongsTo
+    {
+        return $this->belongsTo(Branch::class);
+    }
+
+    /**
      * The teacher who asked.
      */
     public function teacher(): BelongsTo
@@ -85,7 +96,7 @@ class PaceRequest extends Model
     }
 
     /**
-     * The registered PACE the stock is for, when the teacher picked one.
+     * The catalog PACE the stock is for, when the teacher picked one.
      */
     public function pace(): BelongsTo
     {

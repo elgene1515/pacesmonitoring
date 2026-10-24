@@ -7,18 +7,22 @@ use App\Models\GradeLevel;
 class UpdateGradeLevelRequest extends StoreGradeLevelRequest
 {
     /**
-     * A grade level stays in the school year it was registered under; only
-     * its name and order can change.
+     * A grade level stays in its branch and school year; only its name and
+     * order can change.
      *
      * @return array<string, mixed>
      */
     public function rules(): array
     {
-        $gradeLevel = $this->route('gradeLevel');
-        $schoolYearId = $gradeLevel instanceof GradeLevel ? (int) $gradeLevel->school_year_id : 0;
+        $gradeLevel = GradeLevel::query()->find((int) $this->route('gradeLevel'));
 
         return [
-            'name' => ['required', 'string', 'max:100', $this->uniqueName($schoolYearId)->ignore($gradeLevel)],
+            'name' => [
+                'required',
+                'string',
+                'max:100',
+                $this->uniqueName((int) $gradeLevel?->branch_id, (int) $gradeLevel?->school_year_id)->ignore($gradeLevel),
+            ],
             'sort_order' => ['nullable', 'integer', 'min:0', 'max:65535'],
         ];
     }

@@ -1,22 +1,20 @@
 import { computed, reactive, ref } from 'vue';
 import { defineStore } from 'pinia';
 import { paceService } from '../services';
+import { Pace } from '../models';
 import { notify } from './notifications';
 
 /**
- * PACE master list.
+ * The branch's PACE catalog as the teacher sees it (read-only), with the
+ * teacher's own booklets on each PACE.
  *
  *  items                    ref<Pace[]>
  *  loading                  ref<boolean>
  *  loaded                   ref<boolean>
  *  filters                  reactive<{ search: string }>
  *  count                    computed<number>
+ *  held                     computed<Pace[]>   the PACEs the teacher holds booklets of
  *  fetch(overrides?)        merges overrides into filters, reloads items (toasts on failure) -> Promise<Pace[]>
- *  create(payload)          payload: Pace | {name, number} -> Promise<Pace>   (throws ApiError)
- *  createRange(payload)     payload: {name, start, end, school_year_id} -> Promise<Pace[]> (throws ApiError)
- *  update(id, payload)      -> Promise<Pace>                                  (throws ApiError)
- *  adjustStock(id, delta)   add (or, when negative, remove) booklets -> Promise<Pace> (throws ApiError)
- *  remove(id)               -> Promise<void>                                  (throws ApiError)
  *  byId(id)                 -> Pace|undefined (from the loaded list)
  *  upsert(pace)             insert or replace in items (keeps list sorted by number)
  *  resetFilters()
@@ -28,13 +26,10 @@ export const usePacesStore = defineStore('paces', () => {
     const filters = reactive({ search: '' });
 
     const count = computed(() => items.value.length);
+    const held = computed(() => items.value.filter((pace) => pace.stock > 0));
 
     function sortItems() {
-        items.value.sort((a, b) => {
-            const left = String(a.number);
-            const right = String(b.number);
-            return left.length - right.length || left.localeCompare(right);
-        });
+        items.value.sort(Pace.compare);
     }
 
     function byId(id) {
@@ -68,6 +63,7 @@ export const usePacesStore = defineStore('paces', () => {
 
         try {
             items.value = await paceService.list({ ...filters });
+            sortItems();
             loaded.value = true;
         } catch (err) {
             notify.error(err?.message ?? 'Failed to load PACEs.');
@@ -76,36 +72,6 @@ export const usePacesStore = defineStore('paces', () => {
         }
 
         return items.value;
-    }
-
-    async function create(payload) {
-        const pace = await paceService.create(payload);
-        upsert(pace);
-        return pace;
-    }
-
-    async function createRange(payload) {
-        const created = await paceService.createRange(payload);
-        created.forEach(upsert);
-        return created;
-    }
-
-    async function update(id, payload) {
-        const pace = await paceService.update(id, payload);
-        upsert(pace);
-        return pace;
-    }
-
-    async function adjustStock(id, delta) {
-        const pace = await paceService.adjustStock(id, delta);
-        upsert(pace);
-        return pace;
-    }
-
-    async function remove(id) {
-        await paceService.remove(id);
-        const numeric = Number(id);
-        items.value = items.value.filter((pace) => pace.id !== numeric);
     }
 
     /** Forget the loaded list (called when the session ends so another user never sees it). */
@@ -122,12 +88,8 @@ export const usePacesStore = defineStore('paces', () => {
         loaded,
         filters,
         count,
+        held,
         fetch,
-        create,
-        createRange,
-        update,
-        adjustStock,
-        remove,
         byId,
         upsert,
         resetFilters,

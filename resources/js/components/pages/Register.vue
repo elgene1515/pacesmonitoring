@@ -6,6 +6,7 @@ import { homeRouteFor } from '../../router';
 import { APP_NAME } from '../../core/constants';
 import { ROLES } from '../../models';
 import AppField from '../ui/AppField.vue';
+import LegalDialog from '../legal/LegalDialog.vue';
 import PasswordField from '../ui/PasswordField.vue';
 
 /**
@@ -20,8 +21,8 @@ const ROLE_OPTIONS = [
     {
         value: ROLES.ADMIN,
         title: 'School administrator',
-        description: 'Register your school and its branches, admit teachers, manage school years and see every teacher\'s records.',
-        next: 'Next: register your school.',
+        description: 'Register your school and its branches, admit teachers, manage school years and see every teacher\'s records. Or join a school that is already registered, with its code.',
+        next: 'Next: register your school, or enter the code of a registered one.',
     },
     {
         value: ROLES.TEACHER,
@@ -33,11 +34,26 @@ const ROLE_OPTIONS = [
 
 const form = reactive({
     role: '',
-    name: '',
+    first_name: '',
+    middle_name: '',
+    last_name: '',
+    suffix: '',
+    phone: '',
+    address: '',
     email: '',
     password: '',
     password_confirmation: '',
+    terms: false,
 });
+/** The Terms of Service / Privacy Policy dialog: which document is open (null = closed). */
+const legalOpen = ref(false);
+const legalDocument = ref('terms');
+
+function showLegal(document) {
+    legalDocument.value = document;
+    legalOpen.value = true;
+}
+
 const fieldErrors = ref({});
 const formError = ref('');
 const submitting = ref(false);
@@ -51,8 +67,18 @@ function validate() {
         errors.role = ['Please choose how you will use the system.'];
     }
 
-    if (!form.name.trim()) {
-        errors.name = ['Name is required.'];
+    if (!form.first_name.trim()) {
+        errors.first_name = ['First name is required.'];
+    }
+
+    if (!form.last_name.trim()) {
+        errors.last_name = ['Surname is required.'];
+    }
+
+    if (!form.phone.trim()) {
+        errors.phone = ['Contact number is required.'];
+    } else if (!/^\+?[0-9 ()\-.]{7,30}$/.test(form.phone.trim())) {
+        errors.phone = ['Enter a contact number using digits (spaces, dashes, brackets and a leading + are fine).'];
     }
 
     if (!form.email.trim()) {
@@ -65,6 +91,10 @@ function validate() {
         errors.password = ['Password must be at least 8 characters.'];
     } else if (form.password !== form.password_confirmation) {
         errors.password_confirmation = ['Passwords do not match.'];
+    }
+
+    if (!form.terms) {
+        errors.terms = ['Please accept the Terms of Service and Privacy Policy to create an account.'];
     }
 
     fieldErrors.value = errors;
@@ -84,10 +114,16 @@ async function submit() {
     try {
         const user = await auth.register({
             role: form.role,
-            name: form.name.trim(),
+            first_name: form.first_name.trim(),
+            middle_name: form.middle_name.trim() || null,
+            last_name: form.last_name.trim(),
+            suffix: form.suffix.trim() || null,
+            phone: form.phone.trim(),
+            address: form.address.trim() || null,
             email: form.email.trim(),
             password: form.password,
             password_confirmation: form.password_confirmation,
+            terms: form.terms,
         });
         await router.replace(homeRouteFor(user));
     } catch (err) {
@@ -135,13 +171,78 @@ async function submit() {
                     </div>
                 </AppField>
 
-                <AppField label="Full name" for="register-name" :error="fieldErrors.name" required>
+                <div class="pair">
+                    <AppField label="First name" for="register-first-name" :error="fieldErrors.first_name" required>
+                        <input
+                            id="register-first-name"
+                            v-model="form.first_name"
+                            class="input"
+                            type="text"
+                            autocomplete="given-name"
+                            maxlength="100"
+                            :disabled="submitting"
+                        />
+                    </AppField>
+
+                    <AppField label="Middle name" for="register-middle-name" :error="fieldErrors.middle_name">
+                        <input
+                            id="register-middle-name"
+                            v-model="form.middle_name"
+                            class="input"
+                            type="text"
+                            autocomplete="additional-name"
+                            maxlength="100"
+                            :disabled="submitting"
+                        />
+                    </AppField>
+
+                    <AppField label="Surname" for="register-last-name" :error="fieldErrors.last_name" required>
+                        <input
+                            id="register-last-name"
+                            v-model="form.last_name"
+                            class="input"
+                            type="text"
+                            autocomplete="family-name"
+                            maxlength="100"
+                            :disabled="submitting"
+                        />
+                    </AppField>
+
+                    <AppField label="Suffix" for="register-suffix" :error="fieldErrors.suffix" hint="e.g. Jr., III">
+                        <input
+                            id="register-suffix"
+                            v-model="form.suffix"
+                            class="input"
+                            type="text"
+                            autocomplete="honorific-suffix"
+                            maxlength="20"
+                            :disabled="submitting"
+                        />
+                    </AppField>
+                </div>
+
+                <AppField label="Contact number" for="register-phone" :error="fieldErrors.phone" required>
                     <input
-                        id="register-name"
-                        v-model="form.name"
+                        id="register-phone"
+                        v-model="form.phone"
+                        class="input"
+                        type="tel"
+                        inputmode="tel"
+                        autocomplete="tel"
+                        maxlength="30"
+                        placeholder="e.g. 0917 123 4567"
+                        :disabled="submitting"
+                    />
+                </AppField>
+
+                <AppField label="Address" for="register-address" :error="fieldErrors.address" hint="Optional.">
+                    <input
+                        id="register-address"
+                        v-model="form.address"
                         class="input"
                         type="text"
-                        autocomplete="name"
+                        autocomplete="street-address"
+                        maxlength="500"
                         :disabled="submitting"
                     />
                 </AppField>
@@ -186,12 +287,26 @@ async function submit() {
                     />
                 </AppField>
 
+                <AppField :error="fieldErrors.terms">
+                    <label class="checkbox terms">
+                        <input id="register-terms" v-model="form.terms" type="checkbox" :disabled="submitting" />
+                        <span>
+                            I have read and agree to the
+                            <button type="button" class="text-link" @click.prevent="showLegal('terms')">Terms of Service</button>
+                            and the
+                            <button type="button" class="text-link" @click.prevent="showLegal('privacy')">Privacy Policy</button>.
+                        </span>
+                    </label>
+                </AppField>
+
                 <p v-if="selectedRole" class="muted next-step">{{ selectedRole.next }}</p>
 
                 <button type="submit" class="btn submit" :disabled="submitting">
                     {{ submitting ? 'Creating account…' : 'Create account' }}
                 </button>
             </form>
+
+            <LegalDialog v-model="legalOpen" v-model:document="legalDocument" />
 
             <p class="switch muted">
                 Already have an account?
@@ -240,6 +355,44 @@ h1 {
     color: var(--danger);
     background: rgba(var(--danger-rgb), 0.06);
     font-size: 0.92rem;
+}
+
+/* First / middle name and surname / suffix side by side. */
+.pair {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 12px;
+}
+
+/* The document names in the terms line look like links but open the dialog. */
+.text-link {
+    display: inline;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--primary);
+    font: inherit;
+    cursor: pointer;
+}
+
+.text-link:hover {
+    text-decoration: underline;
+}
+
+.text-link:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+    border-radius: 2px;
+}
+
+.terms {
+    align-items: flex-start;
+    font-size: 0.92rem;
+    line-height: 1.5;
+}
+
+.terms input {
+    margin-top: 3px;
 }
 
 .roles {

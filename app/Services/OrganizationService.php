@@ -2,7 +2,9 @@
 
 namespace App\Services;
 
+use App\Enums\JoinRequestStatus;
 use App\Models\Branch;
+use App\Models\JoinRequest;
 use App\Models\Organization;
 use App\Models\Plan;
 use App\Models\PlanRequest;
@@ -39,9 +41,27 @@ class OrganizationService
             ]);
         }
 
-        return DB::transaction(function () use ($admin, $data): Organization {
-            $branches = $this->normalizeBranches($data['branches'] ?? []);
+        $branches = $this->normalizeBranches($data['branches'] ?? []);
 
+        // The branches have to fit the plan the school signs up for; without a paid pick it is the trial plan.
+        $plan = ! empty($data['plan_id'])
+            ? Plan::query()->find((int) $data['plan_id'])
+            : null;
+        $plan ??= $this->subscriptions->defaultPlan();
+
+        if ($plan->max_branches !== null && count($branches) > $plan->max_branches) {
+            throw ValidationException::withMessages([
+                'branches' => [sprintf(
+                    'The %s plan allows up to %d %s, but you named %d. Remove some, or pick a plan with more branches.',
+                    $plan->name,
+                    $plan->max_branches,
+                    $plan->max_branches === 1 ? 'branch' : 'branches',
+                    count($branches)
+                )],
+            ]);
+        }
+
+        return DB::transaction(function () use ($admin, $data, $branches): Organization {
             $organization = Organization::create([
                 'name' => trim((string) $data['name']),
                 'code' => Organization::generateCode(),
@@ -67,6 +87,12 @@ class OrganizationService
             $admin->organization_id = $organization->id;
             $admin->branch_id = $main?->id;
             $admin->save();
+
+            // Registering a school settles it: a request they sent to join another one is withdrawn.
+            JoinRequest::query()
+                ->where('user_id', $admin->id)
+                ->pending()
+                ->update(['status' => JoinRequestStatus::Cancelled->value, 'decided_at' => now()]);
 
             if (! empty($data['plan_id'])) {
                 $plan = Plan::query()->find((int) $data['plan_id']);
@@ -170,15 +196,25 @@ class OrganizationService
     {
         $organization
             ->load(['branches' => fn ($query) => $query->withCount(['teachers']), 'currentSubscription.plan'])
-            ->loadCount(['branches', 'teachers', 'admins', 'pendingJoinRequests', 'pendingPlanRequests', 'pendingPaceRequests']);
+            ->loadCount([
+                'branches',
+                'teachers',
+                'admins',
+                'pendingJoinRequests',
+                'pendingPlanRequests',
+                'pendingPaceRequests',
+                'pendingTeachingAssignmentRequests',
+                'pendingStudentChangeRequests',
+            ]);
 
-        // Students across every teacher, for the plan's student cap, and per branch.
+        // Students across every section, for the plan's student cap, and per branch.
         $organization->setAttribute('students_count', $organization->studentsQuery()->count());
 
         $perBranch = $organization->studentsQuery()
-            ->join('users', 'users.id', '=', 'students.created_by')
-            ->groupBy('users.branch_id')
-            ->selectRaw('users.branch_id as branch_id, count(*) as total')
+            ->join('sections', 'sections.id', '=', 'students.section_id')
+            ->join('grade_levels', 'grade_levels.id', '=', 'sections.grade_level_id')
+            ->groupBy('grade_levels.branch_id')
+            ->selectRaw('grade_levels.branch_id as branch_id, count(*) as total')
             ->pluck('total', 'branch_id');
 
         foreach ($organization->branches as $branch) {

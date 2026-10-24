@@ -4,8 +4,8 @@ namespace Database\Factories;
 
 use App\Enums\Sex;
 use App\Models\GradeLevel;
+use App\Models\Section;
 use App\Models\Student;
-use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Carbon;
 
@@ -22,7 +22,8 @@ class StudentFactory extends Factory
     protected $model = Student::class;
 
     /**
-     * Define the model's default state.
+     * Define the model's default state: a student enrolled in a section,
+     * filed under the section's grade level's school year.
      *
      * @return array<string, mixed>
      */
@@ -40,9 +41,24 @@ class StudentFactory extends Factory
             'birth_date' => $birthDate->toDateString(),
             'age' => $birthDate->age,
             'sex' => $sex,
-            'grade_level_id' => GradeLevel::factory(),
-            'created_by' => User::factory(),
+            'section_id' => Section::factory(),
+            'school_year_id' => function (array $attributes) {
+                $gradeLevelId = Section::query()->whereKey($attributes['section_id'])->value('grade_level_id');
+
+                return GradeLevel::query()->whereKey($gradeLevelId)->value('school_year_id');
+            },
+            'created_by' => null,
         ];
+    }
+
+    /**
+     * A student of the given section.
+     *
+     * @return static
+     */
+    public function inSection(Section $section)
+    {
+        return $this->state(fn (array $attributes) => ['section_id' => $section->id]);
     }
 
     /**
@@ -56,6 +72,18 @@ class StudentFactory extends Factory
             'sex' => Sex::Male,
             'first_name' => fake()->firstNameMale(),
         ]);
+    }
+
+    /**
+     * A new student takes every subject their section offers (tests and seeders can narrow it).
+     */
+    public function configure(): static
+    {
+        return $this->afterCreating(function (Student $student): void {
+            $student->loadMissing('section');
+
+            $student->subjects()->syncWithoutDetaching($student->section?->subjects()->pluck('subjects.id')->all() ?? []);
+        });
     }
 
     /**

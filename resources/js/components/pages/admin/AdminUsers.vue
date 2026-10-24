@@ -5,10 +5,12 @@ import { adminService, ownerService } from '../../../services';
 import { useAuthStore } from '../../../stores/auth';
 import { useScopeStore } from '../../../stores/scope';
 import { notify } from '../../../stores/notifications';
-import { formatDate, pluralize } from '../../../core/format';
+import { formatDate, pluralize, toIsoDate } from '../../../core/format';
 import EmptyState from '../../ui/EmptyState.vue';
 import AppIcon from '../../ui/AppIcon.vue';
 import StatusBadge from '../../ui/StatusBadge.vue';
+import SearchSelect from '../../ui/SearchSelect.vue';
+import JoinRequestsPanel from '../../admin/JoinRequestsPanel.vue';
 
 /**
  * The members of the organization (teachers and admins). The owner sees every
@@ -33,6 +35,10 @@ const branchId = ref('');
 const organizations = ref([]);
 const organizationId = ref('');
 
+/** The owner can narrow the list to a range of registration dates (either end may be left open). */
+const registeredFrom = ref('');
+const registeredTo = ref('');
+
 const roleOptions = computed(() => {
     const options = [
         { value: '', label: auth.isPlatform ? 'All roles' : 'All members' },
@@ -49,6 +55,23 @@ const roleOptions = computed(() => {
 
 const showOrganizationFilter = computed(() => auth.isPlatform && !scope.isScoped);
 
+/** The join request panel follows the organization filter (the scope bar and a school admin's own school are applied by the server). */
+const panelOrganizationId = computed(() => (showOrganizationFilter.value && organizationId.value !== '' ? Number(organizationId.value) : null));
+const panelSchoolName = computed(() => {
+    if (auth.isAdmin) {
+        return auth.user?.organizationName ?? '';
+    }
+
+    if (scope.isScoped) {
+        return scope.organizationName;
+    }
+
+    return organizations.value.find((organization) => Number(organization.id) === panelOrganizationId.value)?.name ?? '';
+});
+
+/** The organization filter's choices: every organization, or none picked (a dropdown you can type into). */
+const organizationFilterOptions = computed(() => [{ value: '', label: 'All organizations' }, ...organizations.value.map((organization) => ({ value: organization.id, label: organization.name }))]);
+
 /** The organization_id the page's own requests carry, when the organization filter is in use. */
 const organizationParams = () => (showOrganizationFilter.value && organizationId.value !== '' ? { organization_id: organizationId.value } : {});
 
@@ -61,7 +84,22 @@ const title = 'Users';
 
 let searchTimer = null;
 
-const hasFilters = computed(() => search.value.trim() !== '' || roleFilter.value !== '' || branchId.value !== '' || organizationId.value !== '');
+const hasFilters = computed(() => search.value.trim() !== '' || roleFilter.value !== '' || branchId.value !== '' || organizationId.value !== '' || registeredFrom.value !== '' || registeredTo.value !== '');
+
+/** The loaded users registered within the date range (days as shown in the Registered column). */
+const visibleUsers = computed(() => {
+    if (registeredFrom.value === '' && registeredTo.value === '') {
+        return users.value;
+    }
+
+    return users.value.filter((user) => {
+        const day = toIsoDate(user.createdAt);
+
+        return day !== ''
+            && (registeredFrom.value === '' || day >= registeredFrom.value)
+            && (registeredTo.value === '' || day <= registeredTo.value);
+    });
+});
 const emptyMessage = computed(() => (hasFilters.value ? 'No users match your filters.' : (auth.isPlatform ? 'No users registered yet.' : 'No teachers have joined yet. Share your school code from the Organization page.')));
 
 async function load() {
@@ -116,6 +154,8 @@ function clearFilters() {
     roleFilter.value = '';
     branchId.value = '';
     organizationId.value = '';
+    registeredFrom.value = '';
+    registeredTo.value = '';
 
     if (hadOrganization) {
         branches.value = [];
@@ -162,14 +202,8 @@ onBeforeUnmount(() => {
             <div>
                 <h1>{{ title }}</h1>
                 <p v-if="auth.isAdmin" class="muted subtitle">
-                    Everyone in {{ auth.user?.organizationName }}. Teachers join through the school code; admit them from the Organization page.
+                    Everyone in {{ auth.user?.organizationName }}. Teachers and fellow administrators join through the school code; their requests are at the bottom of this page.
                 </p>
-            </div>
-            <div v-if="auth.isAdmin" class="page-actions">
-                <RouterLink :to="{ name: 'admin-organization' }" class="btn btn-secondary btn-sm">
-                    Join requests
-                    <span v-if="auth.organization?.pendingJoinRequestsCount" class="count-badge">{{ auth.organization.pendingJoinRequestsCount }}</span>
-                </RouterLink>
             </div>
         </div>
 
@@ -187,28 +221,39 @@ onBeforeUnmount(() => {
                     <select v-model="roleFilter" class="input select" aria-label="Filter by role">
                         <option v-for="option in roleOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
                     </select>
-                    <select v-if="showOrganizationFilter" v-model="organizationId" class="input select" aria-label="Filter by organization" @change="onOrganizationChange">
-                        <option value="">All organizations</option>
-                        <option v-for="organization in organizations" :key="organization.id" :value="organization.id">{{ organization.name }}</option>
-                    </select>
+                    <SearchSelect
+                        v-if="showOrganizationFilter"
+                        v-model="organizationId"
+                        class="organization-select"
+                        :options="organizationFilterOptions"
+                        aria-label="Filter by organization"
+                        empty-text="No organization matches"
+                        @change="onOrganizationChange"
+                    />
                     <select v-if="showBranchFilter" v-model="branchId" class="input select" aria-label="Filter by branch" :disabled="!branchFilterEnabled">
                         <option value="">{{ branchFilterEnabled ? 'All branches' : 'Pick an organization first' }}</option>
                         <option v-for="branch in branches" :key="branch.id" :value="branch.id">{{ branch.name }}</option>
                     </select>
+                    <div v-if="auth.isPlatform" class="date-range" role="group" aria-label="Filter by registered date">
+                        <span class="muted date-range-label">Registered</span>
+                        <input v-model="registeredFrom" class="input date-input" type="date" :max="registeredTo || undefined" aria-label="Registered from" />
+                        <span class="muted" aria-hidden="true">–</span>
+                        <input v-model="registeredTo" class="input date-input" type="date" :min="registeredFrom || undefined" aria-label="Registered to" />
+                    </div>
                     <button v-if="hasFilters" type="button" class="btn btn-link btn-sm" @click="clearFilters">
                         Clear
                     </button>
                 </div>
                 <div class="toolbar-meta">
                     <span class="muted count nowrap">
-                        {{ loading ? 'Loading…' : pluralize(users.length, 'user') }}
+                        {{ loading ? 'Loading…' : pluralize(visibleUsers.length, 'user') }}
                     </span>
                 </div>
             </div>
 
             <p v-if="loading && !loaded" class="muted state">Loading…</p>
 
-            <EmptyState v-else-if="users.length === 0" :message="emptyMessage">
+            <EmptyState v-else-if="visibleUsers.length === 0" :message="emptyMessage">
                 <template v-if="hasFilters" #action>
                     <button type="button" class="btn btn-secondary btn-sm" @click="clearFilters">Clear filters</button>
                 </template>
@@ -238,7 +283,7 @@ onBeforeUnmount(() => {
                         </tr>
                     </thead>
                     <tbody>
-                        <tr v-for="user in users" :key="user.id">
+                        <tr v-for="user in visibleUsers" :key="user.id">
                             <td class="ellipsis">
                                 <RouterLink :to="{ name: 'admin-user-detail', params: { id: user.id } }" class="name">
                                     {{ user.name }}
@@ -265,6 +310,14 @@ onBeforeUnmount(() => {
                 </table>
             </div>
         </div>
+
+        <!-- The people asking to join: the admin's own school; for the owner every school at once, or the one picked in the scope bar / the organization filter. -->
+        <JoinRequestsPanel
+            v-if="auth.isAdmin || auth.isPlatform"
+            :school-name="panelSchoolName"
+            :organization-id="panelOrganizationId"
+            @decided="load"
+        />
     </div>
 </template>
 
@@ -281,20 +334,6 @@ onBeforeUnmount(() => {
 
 .subtitle {
     margin: 4px 0 0;
-}
-
-.count-badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 18px;
-    height: 18px;
-    padding: 0 5px;
-    border-radius: 999px;
-    background: var(--danger);
-    color: var(--on-danger);
-    font-size: 0.75rem;
-    font-weight: 600;
 }
 
 .card {
@@ -331,6 +370,27 @@ onBeforeUnmount(() => {
 
 .select {
     min-width: 130px;
+}
+
+/* From – to registration dates (the owner's view). */
+.date-range {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.date-range-label {
+    font-size: 0.9rem;
+}
+
+.toolbar-controls .date-input {
+    width: 140px;
+}
+
+.organization-select {
+    flex: 0 1 230px;
+    min-width: 180px;
 }
 
 .toolbar-meta {

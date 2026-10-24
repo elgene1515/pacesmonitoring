@@ -3,10 +3,9 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { paceService } from '../../services';
 import { formatDate, formatScore, pluralize } from '../../core/format';
 import { buildRecordRings } from '../../core/recordRings';
-import PaceFormModal from '../paces/PaceFormModal.vue';
 import PaceRequestFormModal from '../paces/PaceRequestFormModal.vue';
-import StockControl from '../paces/StockControl.vue';
 import EmptyState from '../ui/EmptyState.vue';
+import StatusBadge from '../ui/StatusBadge.vue';
 import LayeredRings from '../charts/LayeredRings.vue';
 import PaceRecordsExplorer from '../assignments/PaceRecordsExplorer.vue';
 
@@ -20,7 +19,6 @@ const RECORD_ORDER = ['tested', 'issued', 'assigned'];
 const pace = ref(null);
 const loading = ref(true);
 const loadError = ref('');
-const editOpen = ref(false);
 const requestOpen = ref(false);
 
 const records = computed(() => pace.value?.assignments ?? []);
@@ -76,13 +74,6 @@ async function load() {
     }
 }
 
-/** Keep the loaded PACE in step with a − / + change without reloading its records. */
-function onStockAdjusted(updated) {
-    if (pace.value && updated) {
-        pace.value.stock = updated.stock;
-    }
-}
-
 watch(() => props.id, load);
 
 onMounted(load);
@@ -110,7 +101,6 @@ onMounted(load);
                 </div>
                 <div class="page-actions">
                     <button type="button" class="btn btn-secondary" @click="requestOpen = true">Request stock</button>
-                    <button type="button" class="btn btn-secondary" @click="editOpen = true">Edit</button>
                 </div>
             </div>
 
@@ -128,13 +118,15 @@ onMounted(load);
                             <dd>{{ pace.name }}</dd>
                         </div>
                         <div class="info-item info-stock">
-                            <dt>Stock on hand</dt>
+                            <dt>Your booklets</dt>
                             <dd>
-                                <StockControl :pace="pace" @adjusted="onStockAdjusted" />
+                                <span class="mono stock-value" :class="`level-${pace.stockLevel}`">{{ pace.stock }}</span>
+                                <StatusBadge :tone="pace.stockTone">{{ pace.stockLabel }}</StatusBadge>
+                                <span class="muted pool">· branch pool <span class="mono">{{ pace.poolStock }}</span></span>
                                 <RouterLink v-if="pace.hasPendingRequest" :to="{ name: 'pace-requests' }" class="small">
                                     {{ pluralize(pace.pendingRequestsCount, 'stock request') }} waiting for your admin
                                 </RouterLink>
-                                <span v-else class="muted small">Issuing this PACE to a student takes one booklet.</span>
+                                <span v-else class="muted small">Issuing this PACE to a student takes one of your booklets; your school admin gives more from the pool.</span>
                             </dd>
                         </div>
                         <div class="info-item">
@@ -180,12 +172,12 @@ onMounted(load);
                 show-grade
                 year-filter
                 quarter-filter
+                score-filter
+                date-filter
                 :order="RECORD_ORDER"
                 empty-message="This PACE has not been assigned to any student yet."
                 @filtered="shownRecords = $event"
             />
-
-            <PaceFormModal v-model="editOpen" :pace="pace" @saved="load" />
 
             <PaceRequestFormModal v-model="requestOpen" :pace="pace" @saved="load" />
         </template>
@@ -272,6 +264,26 @@ dl.info {
 /* The stock row spans the grid so the − / + control and its hint have room. */
 .info-stock {
     grid-column: 1 / -1;
+}
+
+.stock-value {
+    display: inline-block;
+    min-width: 2.5ch;
+    margin-right: 6px;
+    font-weight: 600;
+}
+
+.stock-value.level-out {
+    color: var(--danger);
+}
+
+.stock-value.level-low {
+    color: var(--warn-text);
+}
+
+.pool {
+    margin-left: 6px;
+    font-size: 0.9rem;
 }
 
 .info-stock .small {

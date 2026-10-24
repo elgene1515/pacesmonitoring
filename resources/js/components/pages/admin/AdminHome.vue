@@ -9,6 +9,7 @@ import { notify } from '../../../stores/notifications';
 import { formatScore, pluralize } from '../../../core/format';
 import { quarterLabel } from '../../../core/schoolYear';
 import EmptyState from '../../ui/EmptyState.vue';
+import SearchSelect from '../../ui/SearchSelect.vue';
 import LayeredRings from '../../charts/LayeredRings.vue';
 import QuarterTiles from '../../charts/QuarterTiles.vue';
 import SexBarChart from '../../charts/SexBarChart.vue';
@@ -39,6 +40,7 @@ const loadingSchoolYears = ref(false);
 const gradeLevels = ref([]);
 const gradeLevelId = ref('');
 const loadingGradeLevels = ref(false);
+const sectionId = ref('');
 const subjectId = ref('');
 const paces = ref([]);
 const paceId = ref('');
@@ -56,10 +58,29 @@ const selectedOrganization = computed(() => organizations.value.find((organizati
 /** The organization_id the page's own requests carry, when the organization filter is in use. */
 const organizationParams = () => (showOrganizationFilter.value && organizationId.value !== '' ? { organization_id: organizationId.value } : {});
 
+/** The organization filter's choices: every organization, or none picked (a dropdown you can type into). */
+const organizationFilterOptions = computed(() => [{ value: '', label: 'All organizations' }, ...organizations.value.map((organization) => ({ value: organization.id, label: organization.name }))]);
+
+/**
+ * Every organization at once: branch and school year names repeat across organizations, so each one
+ * says which organization it belongs to (not shown once one organization is picked or in the scope bar).
+ */
+const showWhere = computed(() => auth.isPlatform && !scope.isScoped && organizationId.value === '');
+
+/** "Main Campus · Grace Christian Academy": the branch with the organization it belongs to (the organization alone when there is no branch). */
+function whereLabel(branchName, organizationName) {
+    return [branchName, showWhere.value ? organizationName : ''].filter(Boolean).join(' · ');
+}
+
+/** The name of an organization by id (for school year options). */
+function organizationNameOf(id) {
+    return organizations.value.find((organization) => Number(organization.id) === Number(id))?.name ?? '';
+}
+
 /** Branches only make sense within one organization. */
 const showBranchFilter = computed(() => auth.isAdmin || scope.isScoped || organizationId.value !== '');
 
-const hasScope = computed(() => organizationId.value !== '' || branchId.value !== '' || teacherId.value !== '' || schoolYearId.value !== '' || gradeLevelId.value !== '' || subjectId.value !== '' || paceId.value !== '');
+const hasScope = computed(() => organizationId.value !== '' || branchId.value !== '' || teacherId.value !== '' || schoolYearId.value !== '' || gradeLevelId.value !== '' || sectionId.value !== '' || subjectId.value !== '' || paceId.value !== '');
 
 const visibleTeachers = computed(() => (branchId.value
     ? teachers.value.filter((teacher) => Number(teacher.branchId) === Number(branchId.value))
@@ -69,6 +90,10 @@ const selectedBranch = computed(() => branches.value.find((branch) => Number(bra
 const selectedTeacher = computed(() => teachers.value.find((teacher) => Number(teacher.id) === Number(teacherId.value)) ?? null);
 const selectedYear = computed(() => schoolYears.value.find((year) => Number(year.id) === Number(schoolYearId.value)) ?? null);
 const selectedGradeLevel = computed(() => gradeLevels.value.find((level) => Number(level.id) === Number(gradeLevelId.value)) ?? null);
+
+/** Sections of the chosen grade level (the section filter waits for one). */
+const sectionOptions = computed(() => selectedGradeLevel.value?.sections ?? []);
+const selectedSection = computed(() => sectionOptions.value.find((section) => Number(section.id) === Number(sectionId.value)) ?? null);
 
 /** Subjects offered: the chosen grade level's, else every subject of the loaded grade levels. */
 const subjectOptions = computed(() => {
@@ -104,6 +129,7 @@ const subtitle = computed(() => {
         selectedTeacher.value?.name,
         selectedYear.value ? `SY ${selectedYear.value.name}` : null,
         selectedGradeLevel.value?.name,
+        selectedSection.value?.name,
         selectedSubjectName.value,
         selectedPace.value ? `PACE ${selectedPace.value.label}` : null,
     ].filter(Boolean);
@@ -203,7 +229,7 @@ const topPerformerItems = computed(() => summary.value.topPerformers.map((item) 
     id: item.studentId,
     to: { name: 'admin-student-detail', params: { id: item.studentId } },
     primary: item.studentName,
-    secondary: `${pluralize(item.scoredCount, 'PACE')} scored · ${item.passedCount} pass · ${item.failedCount} fail · ${pluralize(item.retakeCount, 'retake')} · ${item.teacherName}`,
+    secondary: `${pluralize(item.scoredCount, 'PACE')} scored · ${item.passedCount} pass · ${item.failedCount} fail · ${pluralize(item.retakeCount, 'retake')}${item.gradeLevelName ? ` · ${[item.gradeLevelName, item.sectionName].filter(Boolean).join(' · ')}` : ''}`,
     value: formatScore(item.averageScore),
     valueClass: 'success',
     caption: 'avg score',
@@ -218,18 +244,24 @@ const scoreDistributionItems = computed(() => summary.value.scoreDistribution.ma
 const subjectBarItems = computed(() => summary.value.bySubject.map((subject) => ({
     id: subject.id,
     label: subject.name,
-    sublabel: subject.averageScore === null
-        ? subject.gradeLevelName
-        : `${subject.gradeLevelName} · avg ${formatScore(subject.averageScore)}`,
+    sublabel: [
+        subject.gradeLevelName,
+        whereLabel('', subject.organizationName),
+        subject.averageScore === null ? '' : `avg ${formatScore(subject.averageScore)}`,
+    ].filter(Boolean).join(' · '),
     total: subject.total,
     tested: subject.tested,
     issued: subject.issued,
     assigned: subject.assigned,
 })));
 
+/** One bar per grade level; with a section filter the bar says which section its students are in. */
 const gradeLevelBarItems = computed(() => summary.value.byGradeLevel.map((level) => ({
     id: level.id,
-    label: level.teacherName ? `${level.name} · ${level.teacherName}` : level.name,
+    label: [
+        sectionId.value && selectedSection.value ? `${level.name} · ${selectedSection.value.name}` : level.name,
+        whereLabel(branchId.value ? '' : level.branchName, level.organizationName),
+    ].filter(Boolean).join(' · '),
     total: level.total,
     male: level.male,
     female: level.female,
@@ -238,7 +270,7 @@ const gradeLevelBarItems = computed(() => summary.value.byGradeLevel.map((level)
 const teacherActivityItems = computed(() => summary.value.teacherActivity.map((teacher) => ({
     id: teacher.id,
     label: teacher.name,
-    sublabel: [pluralize(teacher.studentsCount, 'student'), teacher.branchName].filter(Boolean).join(' · '),
+    sublabel: [pluralize(teacher.studentsCount, 'student'), whereLabel(teacher.branchName, teacher.organizationName)].filter(Boolean).join(' · '),
     total: teacher.assignmentsCount,
     tested: teacher.testedCount,
     issued: teacher.issuedCount,
@@ -250,7 +282,7 @@ const teacherActivityItems = computed(() => summary.value.teacherActivity.map((t
 const hardestPaceItems = computed(() => summary.value.hardestPaces.map((item) => ({
     id: item.paceId,
     label: `#${item.paceNumber} ${item.paceName}`,
-    sublabel: `${item.failedCount} of ${item.scoredCount} failed · ${item.retakeCount} of ${item.totalCount} retakes`,
+    sublabel: [whereLabel(item.branchName, item.organizationName), `${item.failedCount} of ${item.scoredCount} failed · ${item.retakeCount} of ${item.totalCount} retakes`].filter(Boolean).join(' · '),
     first: item.failRate,
     second: item.retakeRate,
     to: { name: 'admin-pace-detail', params: { id: item.paceId } },
@@ -265,6 +297,7 @@ async function load() {
             teacherId: teacherId.value || null,
             schoolYearId: schoolYearId.value || null,
             gradeLevelId: gradeLevelId.value || null,
+            sectionId: sectionId.value || null,
             subjectId: subjectId.value || null,
             paceId: paceId.value || null,
             organizationId: showOrganizationFilter.value ? organizationId.value || null : null,
@@ -317,6 +350,7 @@ function onOrganizationChange() {
     teacherId.value = '';
     schoolYearId.value = '';
     gradeLevelId.value = '';
+    sectionId.value = '';
     gradeLevels.value = [];
     subjectId.value = '';
     paces.value = [];
@@ -331,11 +365,18 @@ function onBranchChange() {
     if (teacherId.value && !visibleTeachers.value.some((teacher) => Number(teacher.id) === Number(teacherId.value))) {
         teacherId.value = '';
         gradeLevelId.value = '';
+        sectionId.value = '';
         gradeLevels.value = [];
         subjectId.value = '';
         paces.value = [];
         paceId.value = '';
     }
+
+    gradeLevelId.value = '';
+
+    sectionId.value = '';
+    subjectId.value = '';
+    reloadGradeLevels();
 
     load();
 }
@@ -343,6 +384,7 @@ function onBranchChange() {
 /** Changing the teacher drops the grade level / subject / PACE filters and loads that teacher's grade levels and PACEs. */
 async function onTeacherChange() {
     gradeLevelId.value = '';
+    sectionId.value = '';
     gradeLevels.value = [];
     subjectId.value = '';
     paces.value = [];
@@ -353,8 +395,8 @@ async function onTeacherChange() {
         loadingPaces.value = true;
 
         try {
-            [gradeLevels.value, paces.value] = await Promise.all([
-                adminService.listGradeLevels(teacherId.value, schoolYearId.value || null),
+            [, paces.value] = await Promise.all([
+                reloadGradeLevels(),
                 adminService.listPaces({ teacher_id: teacherId.value }),
             ]);
         } catch (err) {
@@ -368,28 +410,48 @@ async function onTeacherChange() {
     load();
 }
 
+/**
+ * The grade levels offered by the filter: those of the chosen branch and school year,
+ * narrowed to the chosen teacher's (none until a school year or a teacher is picked).
+ */
+async function reloadGradeLevels() {
+    gradeLevels.value = [];
+
+    if (!teacherId.value && !schoolYearId.value) {
+        return;
+    }
+
+    loadingGradeLevels.value = true;
+
+    try {
+        gradeLevels.value = await adminService.listGradeLevels({
+            ...organizationParams(),
+            branch_id: branchId.value || '',
+            teacher_id: teacherId.value || '',
+            school_year_id: schoolYearId.value || '',
+        });
+    } catch (err) {
+        notify.error(err?.message ?? 'Failed to load grade levels.');
+    } finally {
+        loadingGradeLevels.value = false;
+    }
+}
+
 /** Changing the school year drops the grade level / subject filters and reloads that year's grade levels. */
 async function onSchoolYearChange() {
     gradeLevelId.value = '';
+    sectionId.value = '';
     subjectId.value = '';
 
-    if (teacherId.value) {
-        loadingGradeLevels.value = true;
-
-        try {
-            gradeLevels.value = await adminService.listGradeLevels(teacherId.value, schoolYearId.value || null);
-        } catch (err) {
-            notify.error(err?.message ?? 'Failed to load grade levels.');
-        } finally {
-            loadingGradeLevels.value = false;
-        }
-    }
+    await reloadGradeLevels();
 
     load();
 }
 
 function onGradeLevelChange() {
     const level = selectedGradeLevel.value;
+
+    sectionId.value = '';
 
     if (subjectId.value && (!level || !level.subjectById(subjectId.value))) {
         subjectId.value = '';
@@ -406,6 +468,7 @@ function clearScope() {
     teacherId.value = '';
     schoolYearId.value = '';
     gradeLevelId.value = '';
+    sectionId.value = '';
     gradeLevels.value = [];
     subjectId.value = '';
     paces.value = [];
@@ -423,6 +486,7 @@ watch(() => scope.organizationId, () => {
     teacherId.value = '';
     schoolYearId.value = '';
     gradeLevelId.value = '';
+    sectionId.value = '';
     gradeLevels.value = [];
     subjectId.value = '';
     paces.value = [];
@@ -451,14 +515,19 @@ onMounted(() => {
 
             <!-- Filters on their own row under the heading: branch, teacher, school year, then that teacher's grade level / subject / PACE. -->
             <div class="filters">
-                <label v-if="showOrganizationFilter" class="filter">
-                <span class="muted">Organization</span>
-                <select v-model="organizationId" class="input" aria-label="Organization" :disabled="loading" @change="onOrganizationChange">
-                    <option value="">All organizations</option>
-                    <option v-for="organization in organizations" :key="organization.id" :value="organization.id">{{ organization.name }}</option>
-                </select>
-            </label>
-            <label v-if="showBranchFilter" class="filter">
+                <div v-if="showOrganizationFilter" class="filter">
+                    <span class="muted">Organization</span>
+                    <SearchSelect
+                        v-model="organizationId"
+                        class="organization-select"
+                        :options="organizationFilterOptions"
+                        aria-label="Organization"
+                        empty-text="No organization matches"
+                        :disabled="loading"
+                        @change="onOrganizationChange"
+                    />
+                </div>
+                <label v-if="showBranchFilter" class="filter">
                     <span class="muted">Branch</span>
                     <select v-model="branchId" class="input" aria-label="Branch" :disabled="loading" @change="onBranchChange">
                         <option value="">All branches</option>
@@ -469,7 +538,7 @@ onMounted(() => {
                     <span class="muted">Teacher</span>
                     <select v-model="teacherId" class="input" aria-label="Teacher" :disabled="loading" @change="onTeacherChange">
                         <option value="">All teachers</option>
-                        <option v-for="teacher in visibleTeachers" :key="teacher.id" :value="teacher.id">{{ teacher.name }}</option>
+                        <option v-for="teacher in visibleTeachers" :key="teacher.id" :value="teacher.id">{{ teacher.name }}{{ showWhere && teacher.organizationName ? ` · ${teacher.organizationName}` : '' }}</option>
                     </select>
                 </label>
                 <label class="filter">
@@ -483,7 +552,7 @@ onMounted(() => {
                     >
                         <option value="">All school years</option>
                         <option v-for="year in schoolYears" :key="year.id" :value="year.id">
-                            {{ year.name }}{{ year.isCurrent ? ' (default)' : '' }}{{ auth.isPlatform && !scope.isScoped && organizationId === '' && year.organizationId ? ` · #${year.organizationId}` : '' }}
+                            {{ year.name }}{{ year.isCurrent ? ' (default)' : '' }}{{ showWhere && organizationNameOf(year.organizationId) ? ` · ${organizationNameOf(year.organizationId)}` : '' }}
                         </option>
                     </select>
                 </label>
@@ -493,19 +562,26 @@ onMounted(() => {
                         v-model="gradeLevelId"
                         class="input"
                         aria-label="Grade level"
-                        :disabled="loading || !teacherId || loadingGradeLevels"
+                        :disabled="loading || (!teacherId && !schoolYearId) || loadingGradeLevels"
                         @change="onGradeLevelChange"
                     >
-                        <option value="">{{ teacherId ? 'All grade levels' : 'Select a teacher first' }}</option>
+                        <option value="">{{ teacherId || schoolYearId ? 'All grade levels' : 'Select a school year first' }}</option>
                         <option v-for="level in gradeLevels" :key="level.id" :value="level.id">
-                            {{ schoolYearId ? level.name : level.labelWithYear }}
+                            {{ schoolYearId ? level.name : level.labelWithYear }}{{ !branchId && level.branchName && showBranchFilter ? ` · ${level.branchName}` : '' }}{{ showWhere && level.organizationName ? ` · ${level.organizationName}` : '' }}
                         </option>
+                    </select>
+                </label>
+                <label class="filter">
+                    <span class="muted">Section</span>
+                    <select v-model="sectionId" class="input" aria-label="Section" :disabled="loading || !gradeLevelId" @change="load">
+                        <option value="">{{ gradeLevelId ? 'All sections' : 'Select a grade level first' }}</option>
+                        <option v-for="section in sectionOptions" :key="section.id" :value="section.id">{{ section.name }}</option>
                     </select>
                 </label>
                 <label class="filter">
                     <span class="muted">Subject</span>
                     <select v-model="subjectId" class="input" aria-label="Subject" :disabled="loading || subjectOptions.length === 0" @change="load">
-                        <option value="">{{ teacherId ? 'All subjects' : 'Select a teacher first' }}</option>
+                        <option value="">{{ subjectOptions.length ? 'All subjects' : 'Select a grade level first' }}</option>
                         <option v-for="subject in subjectOptions" :key="subject.id" :value="subject.id">{{ subject.label }}</option>
                     </select>
                 </label>
@@ -596,14 +672,14 @@ onMounted(() => {
             <QuarterTiles :rows="summary.byQuarter" />
         </section>
 
-        <!-- A breakdown narrowed to a single subject / grade level would be one bar, so that card is hidden. -->
-        <div v-if="!loading && (!subjectId || !gradeLevelId)" :class="{ 'grid-2 pair': !subjectId && !gradeLevelId }">
+        <!-- The subject breakdown would be one bar under a subject filter, so it hides; the grade level card always shows. -->
+        <div v-if="!loading" :class="{ 'grid-2 pair': !subjectId }">
             <section v-if="!subjectId" class="card">
                 <h2 class="card-title">PACEs by subject · {{ periodLabel }}</h2>
                 <StackedBarList :items="subjectBarItems" empty-message="No PACEs assigned yet." scrollable />
             </section>
 
-            <section v-if="!gradeLevelId" class="card">
+            <section class="card">
                 <h2 class="card-title">Students by grade level · {{ periodLabel }}</h2>
                 <SexBarChart :items="gradeLevelBarItems" empty-message="No grade levels yet." />
             </section>
@@ -611,8 +687,8 @@ onMounted(() => {
 
         <div v-if="!loading" class="grid-2 pair">
             <section class="card">
-                <h2 class="card-title">Most active teachers · {{ selectedBranch ? selectedBranch.name : 'All branches' }}</h2>
-                <p class="muted card-hint">PACE records per teacher, busiest first. Follows the branch and teacher filters (not the school year, grade level or subject).</p>
+                <h2 class="card-title">Most active teachers · {{ selectedBranch ? selectedBranch.name : (showWhere ? 'All organizations' : 'All branches') }}</h2>
+                <p class="muted card-hint">PACE records per teacher, busiest first. Follows every filter above: the teachers who teach in what is left, with their students and records there.</p>
                 <StackedBarList :items="teacherActivityItems" empty-message="No teachers have registered any records yet." />
             </section>
 
@@ -638,7 +714,7 @@ onMounted(() => {
         </div>
 
         <!-- School admins find these at the bottom of their Organization page instead. -->
-        <RecentLists v-if="!auth.isAdmin" :students="summary.recentStudents" :users="summary.recentUsers" :loading="loading" />
+        <RecentLists v-if="!auth.isAdmin" :students="summary.recentStudents" :users="summary.recentUsers" :loading="loading" :show-organization="showWhere" />
     </div>
 </template>
 
@@ -682,11 +758,20 @@ onMounted(() => {
     align-items: center;
     gap: 8px;
     font-size: 0.92rem;
+    max-width: 100%;
 }
 
+/* A long option ("2026-2027 · Grace Christian Academy") must not stretch the filter past the screen. */
 .filter .input {
     width: auto;
     min-width: 150px;
+    max-width: 100%;
+    flex: 0 1 auto;
+    text-overflow: ellipsis;
+}
+
+.organization-select {
+    min-width: 220px;
 }
 
 .overview {

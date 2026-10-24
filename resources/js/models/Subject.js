@@ -1,11 +1,12 @@
 import GradeLevel from './GradeLevel';
+import TeachingAssignment from './TeachingAssignment';
 import PaceAssignment from './PaceAssignment';
 
 /**
- * Subject offered by a grade level.
+ * A subject of a grade level, shared by every section of that grade level.
  *
  * API shape: {id, grade_level_id, name, sort_order, assignments_count?, tested_count?,
- *             issued_count?, assigned_count?, grade_level?, assignments?}
+ *             issued_count?, assigned_count?, grade_level?, teaching_assignments?, assignments?}
  */
 export default class Subject {
     constructor({
@@ -18,6 +19,7 @@ export default class Subject {
         issuedCount = null,
         assignedCount = null,
         gradeLevel = null,
+        teachingAssignments = [],
         assignments = [],
     } = {}) {
         this.id = id;
@@ -32,6 +34,8 @@ export default class Subject {
         this.assignedCount = assignedCount;
         /** @type {GradeLevel|null} The grade level (with school year) when the detail endpoint included it. */
         this.gradeLevel = gradeLevel;
+        /** @type {TeachingAssignment[]} who teaches this subject, per section, when loaded */
+        this.teachingAssignments = teachingAssignments;
         /** @type {PaceAssignment[]} PACE records filed under this subject (detail endpoint only). */
         this.assignments = assignments;
     }
@@ -46,17 +50,31 @@ export default class Subject {
         return this.gradeLevel?.schoolYearName ?? '';
     }
 
-    /** The teacher who owns the subject's grade level, when the admin API included them. */
-    get teacher() {
-        return this.gradeLevel?.teacher ?? null;
+    get branchName() {
+        return this.gradeLevel?.branchName ?? '';
     }
 
-    get teacherName() {
-        return this.gradeLevel?.teacherName ?? '';
+    /** The school the subject's grade level belongs to, when the API carried it. */
+    get organizationName() {
+        return this.gradeLevel?.organizationName ?? '';
     }
 
-    get teacherBranchName() {
-        return this.gradeLevel?.teacherBranchName ?? '';
+    /** The distinct teachers of this subject (across sections), by name. */
+    get teachers() {
+        const seen = new Map();
+
+        for (const assignment of this.teachingAssignments) {
+            if (assignment.teacher && !seen.has(assignment.teacher.id)) {
+                seen.set(assignment.teacher.id, assignment.teacher);
+            }
+        }
+
+        return [...seen.values()].sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    }
+
+    /** "Ana Cruz, Ben Reyes" */
+    get teacherNames() {
+        return this.teachers.map((teacher) => teacher.name).join(', ');
     }
 
     /** True when the record has been saved on the server. */
@@ -64,12 +82,11 @@ export default class Subject {
         return this.id !== null && this.id !== undefined;
     }
 
-    /** Snake-case body for POST /subjects and PUT /subjects/{id}. */
+    /** Snake-case body for POST /admin/grade-levels/{id}/subjects and PUT /admin/subjects/{id}. */
     toPayload() {
         const order = this.sortOrder;
 
         return {
-            grade_level_id: this.gradeLevelId ? Number(this.gradeLevelId) : null,
             name: String(this.name ?? '').trim(),
             sort_order: order === '' || order === null || order === undefined ? null : Number(order),
         };
@@ -95,6 +112,7 @@ export default class Subject {
             issuedCount: json.issued_count === undefined ? null : Number(json.issued_count),
             assignedCount: json.assigned_count === undefined ? null : Number(json.assigned_count),
             gradeLevel: GradeLevel.fromJson(json.grade_level),
+            teachingAssignments: TeachingAssignment.collection(json.teaching_assignments),
             assignments: PaceAssignment.collection(json.assignments),
         });
     }

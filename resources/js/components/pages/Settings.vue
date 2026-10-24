@@ -5,20 +5,32 @@ import { notify } from '../../stores/notifications';
 import { formatDate } from '../../core/format';
 import AppField from '../ui/AppField.vue';
 import PasswordField from '../ui/PasswordField.vue';
+import LegalDialog from '../legal/LegalDialog.vue';
 import StatusBadge from '../ui/StatusBadge.vue';
 
 /**
  * My account: the signed-in member's own details (as an administrator would
- * see them on the user page), then the forms to change name / email and the
- * password. Open to every role.
+ * see them on the user page), then the forms to change name (in parts),
+ * contact details, email and the password. Open to every role.
  */
 const auth = useAuthStore();
 
 const user = computed(() => auth.user);
 
-const profileForm = reactive({ name: '', email: '', current_password: '' });
+const profileForm = reactive({ first_name: '', middle_name: '', last_name: '', suffix: '', phone: '', address: '', email: '', current_password: '' });
+/** True when the name parts were guessed from an older account's single name: ask the person to check them. */
+const namePartsGuessed = ref(false);
 const profileErrors = ref({});
 const savingProfile = ref(false);
+
+/** The Terms of Service / Privacy Policy dialog. */
+const legalOpen = ref(false);
+const legalDocument = ref('terms');
+
+function showLegal(document) {
+    legalDocument.value = document;
+    legalOpen.value = true;
+}
 
 const passwordForm = reactive({ current_password: '', password: '', password_confirmation: '' });
 const passwordErrors = ref({});
@@ -28,7 +40,15 @@ const resendingVerification = ref(false);
 watch(
     () => auth.user,
     (current) => {
-        profileForm.name = current?.name ?? '';
+        const parts = current?.nameParts ?? { first: '', middle: '', last: '', suffix: '', guessed: false };
+
+        profileForm.first_name = parts.first;
+        profileForm.middle_name = parts.middle;
+        profileForm.last_name = parts.last;
+        profileForm.suffix = parts.suffix;
+        namePartsGuessed.value = parts.guessed;
+        profileForm.phone = current?.phone ?? '';
+        profileForm.address = current?.address ?? '';
         profileForm.email = current?.email ?? '';
     },
     { immediate: true },
@@ -37,8 +57,18 @@ watch(
 function validateProfile() {
     const errors = {};
 
-    if (!profileForm.name.trim()) {
-        errors.name = ['Name is required.'];
+    if (!profileForm.first_name.trim()) {
+        errors.first_name = ['First name is required.'];
+    }
+
+    if (!profileForm.last_name.trim()) {
+        errors.last_name = ['Surname is required.'];
+    }
+
+    if (!profileForm.phone.trim()) {
+        errors.phone = ['Contact number is required.'];
+    } else if (!/^\+?[0-9 ()\-.]{7,30}$/.test(profileForm.phone.trim())) {
+        errors.phone = ['Enter a contact number using digits (spaces, dashes, brackets and a leading + are fine).'];
     }
 
     if (!profileForm.email.trim()) {
@@ -64,7 +94,12 @@ async function saveProfile() {
     try {
         const emailChanged = profileForm.email.trim() !== auth.user?.email;
         await auth.updateProfile({
-            name: profileForm.name.trim(),
+            first_name: profileForm.first_name.trim(),
+            middle_name: profileForm.middle_name.trim() || null,
+            last_name: profileForm.last_name.trim(),
+            suffix: profileForm.suffix.trim() || null,
+            phone: profileForm.phone.trim(),
+            address: profileForm.address.trim() || null,
             email: profileForm.email.trim(),
             current_password: profileForm.current_password,
         });
@@ -163,6 +198,14 @@ async function savePassword() {
                     <dd>{{ user.name }}</dd>
                 </div>
                 <div class="info-item">
+                    <dt>Contact number</dt>
+                    <dd>{{ user.phone || '—' }}</dd>
+                </div>
+                <div class="info-item">
+                    <dt>Address</dt>
+                    <dd>{{ user.address || '—' }}</dd>
+                </div>
+                <div class="info-item">
                     <dt>Email</dt>
                     <dd class="email">
                         <span>{{ user.email }}</span>
@@ -202,6 +245,15 @@ async function savePassword() {
                     <dt>Registered</dt>
                     <dd>{{ formatDate(user.createdAt) || '—' }}</dd>
                 </div>
+                <div v-if="user.termsAcceptedAt" class="info-item">
+                    <dt>Terms and Privacy Policy accepted</dt>
+                    <dd>
+                        {{ formatDate(user.termsAcceptedAt) }}
+                        <button type="button" class="legal-link" @click="showLegal('terms')">Terms</button>
+                        ·
+                        <button type="button" class="legal-link" @click="showLegal('privacy')">Privacy</button>
+                    </dd>
+                </div>
             </dl>
         </section>
 
@@ -209,15 +261,31 @@ async function savePassword() {
             <section class="card">
                 <h2 class="card-title">Profile</h2>
                 <form class="form" novalidate @submit.prevent="saveProfile">
-                    <AppField label="Name" for="settings-name" :error="profileErrors.name" required>
-                        <input
-                            id="settings-name"
-                            v-model="profileForm.name"
-                            class="input"
-                            type="text"
-                            autocomplete="name"
-                            :disabled="savingProfile"
-                        />
+                    <p v-if="namePartsGuessed" class="muted guessed">
+                        We split your saved name into parts. Please check them, then save.
+                    </p>
+
+                    <div class="name-grid">
+                        <AppField label="First name" for="settings-first-name" :error="profileErrors.first_name" required>
+                            <input id="settings-first-name" v-model="profileForm.first_name" class="input" type="text" autocomplete="given-name" maxlength="100" :disabled="savingProfile" />
+                        </AppField>
+                        <AppField label="Middle name" for="settings-middle-name" :error="profileErrors.middle_name">
+                            <input id="settings-middle-name" v-model="profileForm.middle_name" class="input" type="text" autocomplete="additional-name" maxlength="100" :disabled="savingProfile" />
+                        </AppField>
+                        <AppField label="Surname" for="settings-last-name" :error="profileErrors.last_name" required>
+                            <input id="settings-last-name" v-model="profileForm.last_name" class="input" type="text" autocomplete="family-name" maxlength="100" :disabled="savingProfile" />
+                        </AppField>
+                        <AppField label="Suffix" for="settings-suffix" :error="profileErrors.suffix" hint="e.g. Jr., III">
+                            <input id="settings-suffix" v-model="profileForm.suffix" class="input" type="text" autocomplete="honorific-suffix" maxlength="20" :disabled="savingProfile" />
+                        </AppField>
+                    </div>
+
+                    <AppField label="Contact number" for="settings-phone" :error="profileErrors.phone" required>
+                        <input id="settings-phone" v-model="profileForm.phone" class="input" type="tel" inputmode="tel" autocomplete="tel" maxlength="30" :disabled="savingProfile" />
+                    </AppField>
+
+                    <AppField label="Address" for="settings-address" :error="profileErrors.address" hint="Optional.">
+                        <input id="settings-address" v-model="profileForm.address" class="input" type="text" autocomplete="street-address" maxlength="500" :disabled="savingProfile" />
                     </AppField>
 
                     <AppField
@@ -314,6 +382,8 @@ async function savePassword() {
                 </form>
             </section>
         </div>
+
+        <LegalDialog v-model="legalOpen" v-model:document="legalDocument" />
     </div>
 </template>
 
@@ -352,6 +422,32 @@ dl.info {
     align-items: center;
     flex-wrap: wrap;
     gap: 8px;
+}
+
+.name-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 12px;
+}
+
+.guessed {
+    margin: 0;
+    font-size: 0.88rem;
+}
+
+/* Looks like the other links but opens the dialog. */
+.legal-link {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--primary);
+    font: inherit;
+    font-size: 0.88rem;
+    cursor: pointer;
+}
+
+.legal-link:hover {
+    text-decoration: underline;
 }
 
 .pair {

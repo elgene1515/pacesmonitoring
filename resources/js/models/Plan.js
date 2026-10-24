@@ -17,6 +17,7 @@ export default class Plan {
         pricePerYear = 0,
         currency = 'PHP',
         isActive = true,
+        isTrialDefault = false,
         sortOrder = 0,
         subscriptionsCount = null,
         createdAt = null,
@@ -35,6 +36,8 @@ export default class Plan {
         this.pricePerYear = pricePerYear;
         this.currency = currency;
         this.isActive = isActive;
+        /** The plan a new school's free trial runs on. */
+        this.isTrialDefault = isTrialDefault;
         this.sortOrder = sortOrder;
         this.subscriptionsCount = subscriptionsCount;
         this.createdAt = createdAt;
@@ -119,6 +122,7 @@ export default class Plan {
             pricePerYear: Number(json.price_per_year ?? 0),
             currency: json.currency ?? 'PHP',
             isActive: Boolean(json.is_active),
+            isTrialDefault: Boolean(json.is_trial_default),
             sortOrder: Number(json.sort_order ?? 0),
             subscriptionsCount: count(json.subscriptions_count),
             createdAt: json.created_at ?? null,

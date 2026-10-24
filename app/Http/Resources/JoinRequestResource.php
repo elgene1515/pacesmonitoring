@@ -27,6 +27,8 @@ class JoinRequestResource extends JsonResource
             'user_id' => $this->user_id,
             'organization_id' => $this->organization_id,
             'branch_id' => $this->branch_id,
+            // 'teacher' or 'admin': what the person asked to join as.
+            'requested_role' => $this->requestedRole()->value,
             'user' => $this->whenLoaded('user', fn () => $this->user === null ? null : [
                 'id' => $this->user->id,
                 'name' => $this->user->name,

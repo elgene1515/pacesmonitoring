@@ -4,5 +4,7 @@ export { useSchoolYearsStore } from './schoolYears';
 export { useStudentsStore } from './students';
 export { usePacesStore } from './paces';
 export { usePaceRequestsStore } from './paceRequests';
+export { useTeachingStore } from './teaching';
+export { useStudentChangeRequestsStore } from './studentChangeRequests';
 export { useNotificationsStore, notify } from './notifications';
 export { useThemeStore, THEME_OPTIONS } from './theme';

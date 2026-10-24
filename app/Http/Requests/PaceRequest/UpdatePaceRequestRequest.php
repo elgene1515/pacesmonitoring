@@ -22,7 +22,7 @@ class UpdatePaceRequestRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'pace_id' => ['sometimes', 'nullable', 'integer', Rule::exists('paces', 'id')->where('created_by', $this->user()?->id)],
+            'pace_id' => ['sometimes', 'nullable', 'integer', Rule::exists('paces', 'id')->where('branch_id', $this->user()?->branch_id)],
             'pace_number' => ['sometimes', 'nullable', 'digits_between:1,50'],
             'pace_name' => ['sometimes', 'nullable', 'string', 'max:255'],
             'quantity' => ['sometimes', 'required', 'integer', 'min:1', 'max:10000'],
@@ -50,7 +50,7 @@ class UpdatePaceRequestRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'pace_id.exists' => 'That PACE is not one of yours.',
+            'pace_id.exists' => "That PACE is not in your branch's catalog.",
             'pace_number.digits_between' => 'The PACE number must contain digits only.',
         ];
     }

@@ -5,68 +5,53 @@ namespace App\Http\Requests\Subject;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
+/**
+ * An admin adds a subject to a grade level (the grade level comes from the route).
+ */
 class StoreSubjectRequest extends FormRequest
 {
-    /**
-     * Determine if the user is authorized to make this request.
-     */
     public function authorize(): bool
     {
         return true;
     }
 
     /**
-     * Get the validation rules that apply to the request.
-     *
      * @return array<string, mixed>
      */
     public function rules(): array
     {
         return [
-            'grade_level_id' => [
-                'required',
-                'integer',
-                Rule::exists('grade_levels', 'id')->where('user_id', $this->user()?->id),
-            ],
             'name' => [
                 'required',
                 'string',
                 'max:100',
-                Rule::unique('subjects', 'name')->where('grade_level_id', (int) $this->input('grade_level_id')),
+                Rule::unique('subjects', 'name')->where('grade_level_id', (int) $this->route('gradeLevel')),
             ],
             'sort_order' => ['nullable', 'integer', 'min:0', 'max:65535'],
         ];
     }
 
     /**
-     * Custom validation messages.
-     *
      * @return array<string, string>
      */
     public function messages(): array
     {
         return [
-            'grade_level_id.exists' => 'The selected grade level is invalid.',
             'name.unique' => 'This grade level already has a subject with this name.',
             'sort_order.min' => 'The sort order must be 0 or greater.',
         ];
     }
 
     /**
-     * Custom attribute names used in error messages.
-     *
      * @return array<string, string>
      */
     public function attributes(): array
     {
-        return [
-            'grade_level_id' => 'grade level',
-            'sort_order' => 'sort order',
-        ];
+        return ['sort_order' => 'sort order'];
     }
 
     /**
-     * The validated attributes that may be persisted on a subject (name, sort_order).
+     * The validated attributes that may be persisted on a subject.
      *
      * @return array<string, mixed>
      */

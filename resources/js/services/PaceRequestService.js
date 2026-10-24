@@ -6,6 +6,8 @@ import PaceRequest from '../models/PaceRequest';
  *  list(filters)        GET    /api/pace-requests?status=            -> PaceRequest[] (pending first)
  *  create(payload)      POST   /api/pace-requests                    -> PaceRequest
  *                       payload: PaceRequest | {pace_id?, pace_number?, pace_name?, quantity, needed_by?, message?}
+ *  createMany(payload)  POST   /api/pace-requests/batch              -> PaceRequest[] (one per item, all or nothing)
+ *                       payload: {items: [{pace_id?, pace_number?, pace_name?, quantity}], needed_by?, message?}
  *  update(id, payload)  PUT    /api/pace-requests/{id} (partial)     -> PaceRequest
  *  cancel(id)           DELETE /api/pace-requests/{id}               -> void (withdraw a pending request)
  */
@@ -30,6 +32,12 @@ export default class PaceRequestService {
         await this.api.ensureCsrf();
         const body = await this.api.post('/pace-requests', this.normalize(payload));
         return PaceRequest.fromJson(body?.data);
+    }
+
+    async createMany(payload) {
+        await this.api.ensureCsrf();
+        const body = await this.api.post('/pace-requests/batch', payload);
+        return PaceRequest.collection(body?.data);
     }
 
     async update(id, payload) {

@@ -2,9 +2,9 @@
 
 namespace Database\Factories;
 
+use App\Models\Branch;
 use App\Models\GradeLevel;
 use App\Models\SchoolYear;
-use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
 
 /**
@@ -20,7 +20,9 @@ class GradeLevelFactory extends Factory
     protected $model = GradeLevel::class;
 
     /**
-     * Define the model's default state.
+     * Define the model's default state: a grade level of a branch, registered
+     * under the branch's organization's default school year (a new current
+     * year when the organization has none yet).
      *
      * @return array<string, mixed>
      */
@@ -29,21 +31,29 @@ class GradeLevelFactory extends Factory
         $number = fake()->unique()->numberBetween(1, 1000);
 
         return [
-            'user_id' => User::factory(),
-            // Registered under one of the owner's organization's school years
-            // (its default one when it has any, otherwise a new current year).
+            'branch_id' => Branch::factory(),
             'school_year_id' => function (array $attributes) {
-                $user = User::query()->find($attributes['user_id']);
-                $organizationId = $user?->organization_id;
+                $organizationId = Branch::query()->whereKey($attributes['branch_id'])->value('organization_id');
 
                 return SchoolYear::query()->forOrganization($organizationId)->where('is_current', true)->value('id')
                     ?? SchoolYear::factory()->current()->create([
-                        'user_id' => $attributes['user_id'],
-                        'organization_id' => $organizationId ?? \App\Models\Organization::factory()->create()->id,
+                        'user_id' => \App\Models\User::factory()->admin()->unassigned()->create()->id,
+                        'organization_id' => $organizationId,
                     ])->id;
             },
+            'created_by' => null,
             'name' => 'Grade '.$number,
             'sort_order' => $number,
         ];
+    }
+
+    /**
+     * A grade level of the given branch.
+     *
+     * @return static
+     */
+    public function forBranch(Branch $branch)
+    {
+        return $this->state(fn (array $attributes) => ['branch_id' => $branch->id]);
     }
 }

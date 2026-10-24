@@ -17,8 +17,9 @@ import StatusBadge from '../../ui/StatusBadge.vue';
 
 /**
  * The admin's organization: details, subscription state (with plan change
- * requests to the provider), branches and the teachers asking to join. The
- * platform staff see the same page for the organization picked in the scope bar.
+ * requests to the provider) and branches. The teachers asking to join are
+ * decided on the Users page. The platform staff see the same page for the
+ * organization picked in the scope bar.
  */
 const auth = useAuthStore();
 const scope = useScopeStore();
@@ -289,78 +290,6 @@ async function deleteBranch() {
     }
 }
 
-/* ---------- join requests ---------- */
-
-const requests = ref([]);
-const requestsLoading = ref(false);
-const requestsLoaded = ref(false);
-const showAllRequests = ref(false);
-const deciding = ref(null);
-const decliningRequest = ref(null);
-const declineReason = ref('');
-
-const visibleRequests = computed(() => (showAllRequests.value ? requests.value : requests.value.filter((request) => request.isPending)));
-const pendingCount = computed(() => requests.value.filter((request) => request.isPending).length);
-
-const requestsEmptyMessage = computed(() => (showAllRequests.value
-    ? 'No teacher has asked to join yet.'
-    : 'No pending requests. Teachers ask to join with the school code above.'));
-
-async function loadRequests() {
-    requestsLoading.value = true;
-
-    try {
-        requests.value = await adminService.listJoinRequests();
-        requestsLoaded.value = true;
-    } catch (err) {
-        notify.error(err?.message ?? 'Failed to load join requests.');
-    } finally {
-        requestsLoading.value = false;
-    }
-}
-
-async function accept(request) {
-    deciding.value = request.id;
-
-    try {
-        await adminService.acceptJoinRequest(request.id);
-        notify.success(`${request.userName} now belongs to ${request.branchName || 'your school'}.`);
-        await Promise.all([loadRequests(), load(false)]);
-        auth.refresh().catch(() => {});
-    } catch (err) {
-        notify.error(err?.isValidation ? (err.first('request') ?? err.message) : (err?.message ?? 'Unable to accept the request.'));
-    } finally {
-        deciding.value = null;
-    }
-}
-
-function openDecline(request) {
-    decliningRequest.value = request;
-    declineReason.value = '';
-}
-
-async function decline() {
-    const request = decliningRequest.value;
-
-    if (!request) {
-        return;
-    }
-
-    deciding.value = request.id;
-
-    try {
-        await adminService.declineJoinRequest(request.id, declineReason.value.trim());
-        notify.info(`${request.userName}'s request was declined.`);
-        decliningRequest.value = null;
-        await loadRequests();
-        auth.refresh().catch(() => {});
-    } catch (err) {
-        notify.error(err?.message ?? 'Unable to decline the request.');
-    } finally {
-        deciding.value = null;
-    }
-}
-
 /* ---------- recent students and members (school admins only; platform staff see them on Home) ---------- */
 
 const recentStudents = ref([]);
@@ -398,7 +327,6 @@ async function load(withLists = true) {
         organization.value = await adminService.getOrganization();
 
         if (withLists) {
-            loadRequests();
             loadPlanRequests();
             loadRecent();
         }
@@ -656,78 +584,6 @@ onMounted(load);
                 </div>
             </section>
 
-            <!-- ============ Join requests ============ -->
-            <section class="card list-section">
-                <div class="toolbar">
-                    <div>
-                        <h2 class="card-title">
-                            Join requests
-                            <span v-if="pendingCount" class="count-badge">{{ pendingCount }}</span>
-                        </h2>
-                        <p class="muted card-hint">Teachers who entered your school code and asked to join a branch.</p>
-                    </div>
-                    <label class="checkbox">
-                        <input v-model="showAllRequests" type="checkbox" />
-                        Show decided requests
-                    </label>
-                </div>
-
-                <p v-if="requestsLoading && !requestsLoaded" class="muted state">Loading…</p>
-
-                <EmptyState v-else-if="visibleRequests.length === 0" :message="requestsEmptyMessage" />
-
-                <div v-else class="table-wrap">
-                    <table class="table">
-                        <colgroup>
-                            <col />
-                            <col class="col-branch" />
-                            <col />
-                            <col class="col-date" />
-                            <col class="col-status" />
-                            <col class="col-actions-wide" />
-                        </colgroup>
-                        <thead>
-                            <tr>
-                                <th>Teacher</th>
-                                <th>Branch</th>
-                                <th>Message</th>
-                                <th>Requested</th>
-                                <th>Status</th>
-                                <th class="table-actions"><span class="sr-only">Actions</span></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr v-for="request in visibleRequests" :key="request.id">
-                                <td class="ellipsis">
-                                    <span class="name">{{ request.userName }}</span>
-                                    <span class="muted small">{{ request.user?.email }}</span>
-                                </td>
-                                <td class="ellipsis">{{ request.branchName || '—' }}</td>
-                                <td class="ellipsis muted" :title="request.message">{{ request.message || '—' }}</td>
-                                <td class="nowrap">{{ formatDate(request.createdAt) || '—' }}</td>
-                                <td>
-                                    <StatusBadge :tone="request.isPending ? 'warn' : request.isAccepted ? 'ok' : request.isDeclined ? 'bad' : 'muted'">{{ request.statusLabel }}</StatusBadge>
-                                    <span v-if="request.isDeclined && request.declineReason" class="muted small" :title="request.declineReason">
-                                        {{ request.declineReason }}
-                                    </span>
-                                </td>
-                                <td class="table-actions">
-                                    <template v-if="request.isPending">
-                                        <button type="button" class="btn btn-sm" :disabled="!canWrite || deciding === request.id" @click="accept(request)">
-                                            {{ deciding === request.id ? 'Saving…' : 'Accept' }}
-                                        </button>
-                                        <button type="button" class="btn btn-secondary btn-sm" :disabled="!canWrite || deciding === request.id" @click="openDecline(request)">
-                                            Decline
-                                        </button>
-                                    </template>
-                                    <span v-else class="muted small">{{ request.decidedBy?.name ? `by ${request.decidedBy.name}` : '' }}</span>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </section>
-
             <!-- Recent students and members, last on the page (school admins only) -->
             <RecentLists v-if="auth.isAdmin" :students="recentStudents" :users="recentUsers" :loading="recentLoading" />
         </template>
@@ -822,24 +678,6 @@ onMounted(load);
             Remove the branch <strong>{{ confirmingBranch?.name }}</strong>? Only empty branches can be removed.
         </ConfirmDialog>
 
-        <!-- Decline with a reason -->
-        <AppModal :model-value="decliningRequest !== null" title="Decline request" width="440px" :closable="deciding === null" @update:model-value="decliningRequest = null">
-            <form v-if="decliningRequest" class="form" novalidate @submit.prevent="decline">
-                <p class="muted">
-                    Decline <strong>{{ decliningRequest.userName }}</strong>'s request to join {{ decliningRequest.branchName || 'your school' }}?
-                    They will see the reason and can send a new request later.
-                </p>
-                <AppField label="Reason" for="decline-reason" hint="Optional.">
-                    <input id="decline-reason" v-model="declineReason" class="input" type="text" maxlength="255" :disabled="deciding !== null" />
-                </AppField>
-                <div class="actions">
-                    <button type="button" class="btn btn-secondary" :disabled="deciding !== null" @click="decliningRequest = null">Cancel</button>
-                    <button type="submit" class="btn btn-danger" :disabled="deciding !== null">
-                        {{ deciding !== null ? 'Declining…' : 'Decline' }}
-                    </button>
-                </div>
-            </form>
-        </AppModal>
     </div>
 </template>
 
@@ -1037,28 +875,6 @@ dl.info {
 .card-hint {
     margin: 2px 0 0;
     font-size: 0.85rem;
-}
-
-.count-badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 20px;
-    height: 20px;
-    padding: 0 6px;
-    margin-left: 6px;
-    border-radius: 999px;
-    background: var(--danger);
-    color: var(--on-danger);
-    font-size: 0.78rem;
-    font-weight: 600;
-    vertical-align: middle;
-}
-
-.state {
-    margin: 0;
-    padding: 24px 16px;
-    text-align: center;
 }
 
 .table-wrap {

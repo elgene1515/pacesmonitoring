@@ -2,63 +2,83 @@
 
 namespace App\Http\Requests\Pace;
 
+use App\Models\Pace;
+use Closure;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
+/**
+ * An admin registers a PACE in a branch's catalog, optionally with booklets
+ * already in the pool.
+ */
 class StorePaceRequest extends FormRequest
 {
-    /**
-     * Determine if the user is authorized to make this request.
-     */
     public function authorize(): bool
     {
         return true;
     }
 
     /**
-     * Get the validation rules that apply to the request.
-     *
      * @return array<string, mixed>
      */
     public function rules(): array
     {
         return [
+            'branch_id' => ['required', 'integer', Rule::exists('branches', 'id')],
             'name' => ['required', 'string', 'max:255'],
-            'number' => ['required', 'digits_between:1,50'],
-            'stock' => ['nullable', 'integer', 'min:0', 'max:1000000'],
+            'number' => ['required', 'digits_between:1,50', $this->notInCatalog()],
+            'pool_stock' => ['nullable', 'integer', 'min:0', 'max:1000000'],
         ];
     }
 
     /**
-     * Custom validation messages.
-     *
      * @return array<string, string>
      */
     public function messages(): array
     {
         return [
+            'branch_id.required' => 'Please select the branch whose catalog this PACE goes in.',
+            'branch_id.exists' => 'The selected branch is invalid.',
             'number.digits_between' => 'The PACE number must contain digits only.',
-            'stock.min' => 'The stock cannot be negative.',
+            'pool_stock.min' => 'The stock cannot be negative.',
         ];
     }
 
     /**
-     * The validated attributes that may be persisted on a PACE. A blank stock
-     * is left out, so an update without it keeps the current count.
-     *
+     * @return array<string, string>
+     */
+    public function attributes(): array
+    {
+        return ['branch_id' => 'branch', 'pool_stock' => 'stock'];
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function paceData(): array
     {
-        $data = $this->safe()->only(['name', 'number', 'stock']);
-
-        if (array_key_exists('stock', $data)) {
-            if ($data['stock'] === null) {
-                unset($data['stock']);
-            } else {
-                $data['stock'] = (int) $data['stock'];
-            }
-        }
+        $data = $this->safe()->only(['name', 'number', 'pool_stock']);
+        $data['name'] = trim((string) $data['name']);
+        $data['pool_stock'] = isset($data['pool_stock']) ? (int) $data['pool_stock'] : 0;
 
         return $data;
+    }
+
+    /**
+     * The same number + name may not be registered twice in one branch.
+     */
+    protected function notInCatalog(): Closure
+    {
+        return function (string $attribute, mixed $value, Closure $fail): void {
+            $exists = Pace::query()
+                ->where('branch_id', (int) $this->input('branch_id'))
+                ->where('number', (string) $value)
+                ->where('name', trim((string) $this->input('name')))
+                ->exists();
+
+            if ($exists) {
+                $fail("This PACE is already in the branch's catalog.");
+            }
+        };
     }
 }

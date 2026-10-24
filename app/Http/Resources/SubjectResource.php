@@ -27,6 +27,8 @@ class SubjectResource extends JsonResource
             'issued_count' => $this->whenCounted('issued'),
             'assigned_count' => $this->whenCounted('assigned'),
             'grade_level' => new GradeLevelResource($this->whenLoaded('gradeLevel')),
+            // Who teaches this subject, per section.
+            'teaching_assignments' => TeachingAssignmentResource::collection($this->whenLoaded('teachingAssignments')),
             'assignments' => PaceAssignmentResource::collection($this->whenLoaded('assignments')),
         ];
     }

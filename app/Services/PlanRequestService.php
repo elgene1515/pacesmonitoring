@@ -148,7 +148,7 @@ class PlanRequestService
         $organizationId = $organization instanceof Organization ? $organization->getKey() : $organization;
 
         return PlanRequest::query()
-            ->with(['plan', 'requester', 'decider', 'organization', 'subscription.plan'])
+            ->with(['plan', 'requester', 'decider', 'organization.currentSubscription.plan', 'subscription.plan'])
             ->when($organizationId !== null, fn ($query) => $query->where('organization_id', $organizationId))
             ->when($status !== null && $status !== '', fn ($query) => $query->where('status', $status))
             ->orderByRaw("case when status = 'pending' then 0 else 1 end")

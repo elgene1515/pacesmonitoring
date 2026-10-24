@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -9,7 +10,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Str;
 
 /**
- * A branch (campus) of an organization. Teachers join a branch.
+ * A branch (campus) of an organization. Teachers join a branch; its grade
+ * levels, sections and PACE catalog are the branch's own.
  */
 class Branch extends Model
 {
@@ -77,5 +79,31 @@ class Branch extends Model
     public function teachers(): HasMany
     {
         return $this->hasMany(User::class)->where('role', 'teacher');
+    }
+
+    /**
+     * The branch's grade levels (each with its subjects and sections).
+     */
+    public function gradeLevels(): HasMany
+    {
+        return $this->hasMany(GradeLevel::class)->orderBy('sort_order')->orderBy('name');
+    }
+
+    /**
+     * The branch's PACE catalog.
+     */
+    public function paces(): HasMany
+    {
+        return $this->hasMany(Pace::class);
+    }
+
+    /**
+     * Every student enrolled in one of the branch's sections.
+     *
+     * @return \Illuminate\Database\Eloquent\Builder<\App\Models\Student>
+     */
+    public function studentsQuery(): Builder
+    {
+        return Student::query()->forBranch($this);
     }
 }

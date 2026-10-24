@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { RouterLink, useRouter } from 'vue-router';
 import { useAuthStore } from '../../../stores/auth';
 import { notify } from '../../../stores/notifications';
 import { tenantService } from '../../../services';
@@ -33,6 +33,29 @@ const loadingPlans = ref(false);
 const fieldErrors = ref({});
 const formError = ref('');
 const submitting = ref(false);
+
+/** The plan the school signs up for: the paid one it picked, else the plan its free trial runs on. */
+const chosenPlan = computed(() => (planId.value
+    ? plans.value.find((plan) => String(plan.id) === String(planId.value))
+    : (plans.value.find((plan) => plan.isTrialDefault) ?? plans.value[0])) ?? null);
+
+/** How many branches that plan allows (null while the plans load). */
+const branchLimit = computed(() => chosenPlan.value?.maxBranches ?? null);
+
+const branchLimitReached = computed(() => branchLimit.value !== null && branches.value.length >= branchLimit.value);
+
+const branchHint = computed(() => {
+    const base = "Name each branch and tick the main one; the school's address is the main branch's.";
+
+    if (branchLimit.value === null) {
+        return `${base} You can add more later, within your plan's limit.`;
+    }
+
+    const plan = planId.value ? chosenPlan.value.name : `${chosenPlan.value.name} (the free trial)`;
+    const allowed = branchLimit.value === 1 ? '1 branch' : `up to ${branchLimit.value} branches`;
+
+    return `${base} The ${plan} plan allows ${allowed}; pick a bigger plan below for more. You can add more later, within your plan's limit.`;
+});
 
 const filledBranches = computed(() => branches.value
     .map((branch, index) => ({ name: branch.name.trim(), address: branch.address.trim() || null, is_main: index === mainIndex.value }))
@@ -101,6 +124,8 @@ function validate() {
 
     if (named === 0) {
         errors.branches = ['Name at least one branch.'];
+    } else if (branchLimit.value !== null && named > branchLimit.value) {
+        errors.branches = [`The ${chosenPlan.value.name} plan allows up to ${branchLimit.value} ${branchLimit.value === 1 ? 'branch' : 'branches'}, but you named ${named}. Remove some, or pick a plan with more branches.`];
     }
 
     if (!branches.value[mainIndex.value]?.name.trim()) {
@@ -160,6 +185,7 @@ onMounted(loadPlans);
             <p class="muted intro">
                 Welcome, {{ auth.user?.firstName }}. Tell us about your school and its branches (campuses). Teachers
                 will join a branch using the school code you get at the end of this step.
+                Is your school already registered? <RouterLink :to="{ name: 'setup-join' }">Enter its code and ask to join as an administrator</RouterLink>.
             </p>
 
             <form class="form" novalidate @submit.prevent="submit">
@@ -181,7 +207,7 @@ onMounted(loadPlans);
                 <AppField
                     label="Branches"
                     :error="fieldErrors.branches"
-                    hint="Name each branch and tick the main one; the school's address is the main branch's. You can add more later, within your plan's limit."
+                    :hint="branchHint"
                     required
                 >
                     <div class="branches">
@@ -221,7 +247,13 @@ onMounted(loadPlans);
                                 Remove
                             </button>
                         </div>
-                        <button type="button" class="btn btn-secondary btn-sm add" :disabled="submitting || branches.length >= 20" @click="addBranch">
+                        <button
+                            type="button"
+                            class="btn btn-secondary btn-sm add"
+                            :disabled="submitting || branches.length >= 20 || branchLimitReached"
+                            :title="branchLimitReached ? `The ${chosenPlan.name} plan allows ${branchLimit === 1 ? '1 branch' : `up to ${branchLimit} branches`}` : ''"
+                            @click="addBranch"
+                        >
                             Add another branch
                         </button>
                     </div>

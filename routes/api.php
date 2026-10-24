@@ -9,7 +9,11 @@ use App\Http\Controllers\Api\Admin\PaceController as AdminPaceController;
 use App\Http\Controllers\Api\Admin\PaceRequestController as AdminPaceRequestController;
 use App\Http\Controllers\Api\Admin\PlanRequestController as AdminPlanRequestController;
 use App\Http\Controllers\Api\Admin\SchoolYearController as AdminSchoolYearController;
+use App\Http\Controllers\Api\Admin\SectionController as AdminSectionController;
+use App\Http\Controllers\Api\Admin\StudentChangeRequestController as AdminStudentChangeRequestController;
 use App\Http\Controllers\Api\Admin\StudentController as AdminStudentController;
+use App\Http\Controllers\Api\Admin\SubjectController as AdminSubjectController;
+use App\Http\Controllers\Api\Admin\TeachingAssignmentRequestController as AdminTeachingAssignmentRequestController;
 use App\Http\Controllers\Api\Admin\UserController as AdminUserController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\DashboardController;
@@ -31,9 +35,12 @@ use App\Http\Controllers\Api\PasswordResetController;
 use App\Http\Controllers\Api\PlanController;
 use App\Http\Controllers\Api\ProfileController;
 use App\Http\Controllers\Api\SchoolYearController;
+use App\Http\Controllers\Api\SectionController;
 use App\Http\Controllers\Api\StudentAssignmentController;
+use App\Http\Controllers\Api\StudentChangeRequestController;
 use App\Http\Controllers\Api\StudentController;
 use App\Http\Controllers\Api\SubjectController;
+use App\Http\Controllers\Api\TeachingAssignmentController;
 use App\Http\Controllers\Api\VerificationController;
 use Illuminate\Support\Facades\Route;
 
@@ -47,12 +54,18 @@ use Illuminate\Support\Facades\Route;
 | /sanctum/csrf-cookie, then POSTs to /api/login or /api/register.
 |
 | Roles:
-|  - teacher     own records only (students, PACEs, grade levels, records);
-|                route-model binding is owner-scoped, so a record that belongs
-|                to someone else answers 404.
-|  - admin       manages one organization: branches, teachers (join requests),
-|                school years, plan requests, and read-only analytics across
-|                its teachers.
+|  - teacher     works on what their teaching assignments cover: the
+|                sections they teach in, those sections' students, the
+|                subjects (and PACE records) they are in charge of, and
+|                their branch's PACE catalog. Route-model binding is limited
+|                to that, so anything else answers 404. Teachers enroll
+|                students and propose changes to their details; they ask the
+|                admin for teaching slots and for PACE booklets.
+|  - admin       sets up one organization: branches, school years, the
+|                curriculum (grade levels, subjects, sections), who teaches
+|                what, the PACE catalogs and the stock ledger; enrolls and
+|                edits students; decides the teachers' requests; and has a
+|                read-only analytics area across every teacher.
 |  - owner       the platform owner: every organization, plans, subscriptions,
 |                plan requests and the platform staff.
 |  - vice_admin  platform staff appointed by the owner: same as the owner
@@ -101,11 +114,12 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::post('/organizations', [OrganizationController::class, 'store'])
         ->middleware('role:admin')
         ->name('api.organizations.store');
+    // Teachers join as teachers; an admin-type account may join a registered school as an administrator.
     Route::post('/join-requests', [JoinRequestController::class, 'store'])
-        ->middleware('role:teacher')
+        ->middleware('role:teacher,admin')
         ->name('api.join-requests.store');
     Route::delete('/join-requests/{joinRequest}', [JoinRequestController::class, 'destroy'])
-        ->middleware('role:teacher')
+        ->middleware('role:teacher,admin')
         ->name('api.join-requests.destroy');
 
     /*
@@ -127,29 +141,46 @@ Route::middleware('auth:sanctum')->group(function (): void {
         ->name('api.school-years.select');
 
     /*
-    | Teacher area: the signed-in teacher's own records.
+    | Teacher area: what the teacher's teaching assignments cover.
     */
     Route::middleware(['role:teacher', 'tenant'])->group(function (): void {
         Route::get('/dashboard/summary', [DashboardController::class, 'summary'])->name('api.dashboard.summary');
 
-        Route::apiResource('grade-levels', GradeLevelController::class)
-            ->parameters(['grade-levels' => 'gradeLevel'])
-            ->names('api.grade-levels');
+        // The curriculum, read-only: the grade levels, sections and subjects the teacher teaches.
+        Route::get('/curriculum', [GradeLevelController::class, 'branch'])->name('api.curriculum.index');
+        Route::get('/grade-levels', [GradeLevelController::class, 'index'])->name('api.grade-levels.index');
+        Route::get('/grade-levels/{gradeLevel}', [GradeLevelController::class, 'show'])->name('api.grade-levels.show');
+        Route::get('/subjects', [SubjectController::class, 'index'])->name('api.subjects.index');
+        Route::get('/subjects/{subject}', [SubjectController::class, 'show'])->name('api.subjects.show');
+        Route::get('/sections', [SectionController::class, 'index'])->name('api.sections.index');
+        Route::get('/sections/{section}', [SectionController::class, 'show'])->name('api.sections.show');
 
-        Route::apiResource('subjects', SubjectController::class)
-            ->names('api.subjects');
+        // Teaching assignments and requests for open slots.
+        Route::get('/teaching-assignments', [TeachingAssignmentController::class, 'index'])->name('api.teaching-assignments.index');
+        Route::get('/teaching-assignment-requests', [TeachingAssignmentController::class, 'requests'])->name('api.teaching-assignment-requests.index');
+        Route::post('/teaching-assignment-requests', [TeachingAssignmentController::class, 'storeRequest'])->name('api.teaching-assignment-requests.store');
+        Route::delete('/teaching-assignment-requests/{teachingAssignmentRequest}', [TeachingAssignmentController::class, 'destroyRequest'])->name('api.teaching-assignment-requests.destroy');
 
-        Route::apiResource('students', StudentController::class)->names('api.students');
-        Route::post('/paces/range', [PaceController::class, 'storeRange'])->name('api.paces.range');
-        Route::patch('/paces/{pace}/stock', [PaceController::class, 'adjustStock'])->name('api.paces.stock');
-        Route::apiResource('paces', PaceController::class)->names('api.paces');
+        // Students of the teacher's sections: enroll, view, propose changes.
+        Route::get('/students', [StudentController::class, 'index'])->name('api.students.index');
+        Route::post('/students', [StudentController::class, 'store'])->name('api.students.store');
+        Route::get('/students/{student}', [StudentController::class, 'show'])->name('api.students.show');
+        Route::post('/students/{student}/change-requests', [StudentController::class, 'proposeChange'])->name('api.students.change-requests.store');
+        Route::get('/student-change-requests', [StudentChangeRequestController::class, 'index'])->name('api.student-change-requests.index');
+        Route::delete('/student-change-requests/{studentChangeRequest}', [StudentChangeRequestController::class, 'destroy'])->name('api.student-change-requests.destroy');
+
+        // The branch's PACE catalog, read-only, with the teacher's own booklets.
+        Route::get('/paces', [PaceController::class, 'index'])->name('api.paces.index');
+        Route::get('/paces/{pace}', [PaceController::class, 'show'])->name('api.paces.show');
 
         // Stock requests to the school admin (edit / withdraw while pending).
         Route::get('/pace-requests', [PaceRequestController::class, 'index'])->name('api.pace-requests.index');
         Route::post('/pace-requests', [PaceRequestController::class, 'store'])->name('api.pace-requests.store');
+        Route::post('/pace-requests/batch', [PaceRequestController::class, 'storeBatch'])->name('api.pace-requests.store-batch');
         Route::match(['put', 'patch'], '/pace-requests/{paceRequest}', [PaceRequestController::class, 'update'])->name('api.pace-requests.update');
         Route::delete('/pace-requests/{paceRequest}', [PaceRequestController::class, 'destroy'])->name('api.pace-requests.destroy');
 
+        // PACE records: every record of a student is visible; assigning and editing is limited to the teacher's subjects.
         Route::get('/students/{student}/assignments', [StudentAssignmentController::class, 'index'])
             ->name('api.students.assignments.index');
         Route::post('/students/{student}/assignments', [StudentAssignmentController::class, 'store'])
@@ -189,22 +220,67 @@ Route::middleware('auth:sanctum')->group(function (): void {
         Route::put('/users/{user}', [AdminUserController::class, 'update'])->name('users.update');
         Route::put('/users/{user}/password', [AdminUserController::class, 'updatePassword'])->name('users.password');
         Route::put('/users/{user}/branch', [AdminUserController::class, 'updateBranch'])->name('users.branch');
+        Route::put('/users/{user}/role', [AdminUserController::class, 'updateRole'])->name('users.role');
         Route::delete('/users/{user}/membership', [AdminUserController::class, 'destroyMembership'])->name('users.membership.destroy');
 
-        Route::get('/students', [AdminStudentController::class, 'index'])->name('students.index');
-        Route::get('/students/{student}', [AdminStudentController::class, 'show'])->name('students.show');
-
+        // The curriculum: grade levels (per branch and school year), their subjects and sections.
         Route::get('/grade-levels', [AdminGradeLevelController::class, 'index'])->name('grade-levels.index');
+        Route::post('/grade-levels', [AdminGradeLevelController::class, 'store'])->name('grade-levels.store');
         Route::get('/grade-levels/{gradeLevel}', [AdminGradeLevelController::class, 'show'])->name('grade-levels.show');
-        Route::get('/subjects/{subject}', [AdminGradeLevelController::class, 'showSubject'])->name('subjects.show');
+        Route::match(['put', 'patch'], '/grade-levels/{gradeLevel}', [AdminGradeLevelController::class, 'update'])->name('grade-levels.update');
+        Route::delete('/grade-levels/{gradeLevel}', [AdminGradeLevelController::class, 'destroy'])->name('grade-levels.destroy');
+
+        Route::post('/grade-levels/{gradeLevel}/subjects', [AdminSubjectController::class, 'store'])->name('subjects.store');
+        Route::get('/subjects/{subject}', [AdminSubjectController::class, 'show'])->name('subjects.show');
+        Route::match(['put', 'patch'], '/subjects/{subject}', [AdminSubjectController::class, 'update'])->name('subjects.update');
+        Route::delete('/subjects/{subject}', [AdminSubjectController::class, 'destroy'])->name('subjects.destroy');
+
+        Route::post('/grade-levels/{gradeLevel}/sections', [AdminSectionController::class, 'store'])->name('sections.store');
+        Route::get('/sections/{section}', [AdminSectionController::class, 'show'])->name('sections.show');
+        Route::match(['put', 'patch'], '/sections/{section}', [AdminSectionController::class, 'update'])->name('sections.update');
+        Route::delete('/sections/{section}', [AdminSectionController::class, 'destroy'])->name('sections.destroy');
+        Route::post('/sections/{section}/promote', [AdminSectionController::class, 'promote'])->name('sections.promote');
+
+        // Who teaches what: assign directly, or decide the teachers' requests.
+        Route::put('/sections/{section}/subjects/{subject}/offer', [AdminSectionController::class, 'offer'])->name('sections.subjects.offer');
+        Route::delete('/sections/{section}/subjects/{subject}/offer', [AdminSectionController::class, 'withdraw'])->name('sections.subjects.withdraw');
+        Route::get('/teaching-assignments', [AdminSectionController::class, 'assignments'])->name('teaching-assignments.index');
+        Route::put('/sections/{section}/subjects/{subject}/teacher', [AdminSectionController::class, 'assign'])->name('teaching-assignments.assign');
+        Route::delete('/sections/{section}/subjects/{subject}/teacher', [AdminSectionController::class, 'unassign'])->name('teaching-assignments.unassign');
+        Route::get('/teaching-assignment-requests', [AdminTeachingAssignmentRequestController::class, 'index'])->name('teaching-assignment-requests.index');
+        Route::post('/teaching-assignment-requests/{teachingAssignmentRequest}/accept', [AdminTeachingAssignmentRequestController::class, 'accept'])->name('teaching-assignment-requests.accept');
+        Route::post('/teaching-assignment-requests/{teachingAssignmentRequest}/decline', [AdminTeachingAssignmentRequestController::class, 'decline'])->name('teaching-assignment-requests.decline');
+
+        // Students: every student of the organization; enroll, edit, move, remove; decide teachers' change proposals.
+        Route::get('/students', [AdminStudentController::class, 'index'])->name('students.index');
+        Route::post('/students', [AdminStudentController::class, 'store'])->name('students.store');
+        Route::get('/students/{student}', [AdminStudentController::class, 'show'])->name('students.show');
+        Route::match(['put', 'patch'], '/students/{student}', [AdminStudentController::class, 'update'])->name('students.update');
+        Route::delete('/students/{student}', [AdminStudentController::class, 'destroy'])->name('students.destroy');
+        Route::get('/student-change-requests', [AdminStudentChangeRequestController::class, 'index'])->name('student-change-requests.index');
+        Route::post('/student-change-requests/{studentChangeRequest}/accept', [AdminStudentChangeRequestController::class, 'accept'])->name('student-change-requests.accept');
+        Route::post('/student-change-requests/{studentChangeRequest}/decline', [AdminStudentChangeRequestController::class, 'decline'])->name('student-change-requests.decline');
+
         Route::get('/school-years', [AdminSchoolYearController::class, 'index'])->name('school-years.index');
 
+        // The PACE catalogs and the stock ledger.
         Route::get('/paces', [AdminPaceController::class, 'index'])->name('paces.index');
+        Route::post('/paces', [AdminPaceController::class, 'store'])->name('paces.store');
+        Route::post('/paces/range', [AdminPaceController::class, 'storeRange'])->name('paces.range');
+        Route::post('/paces/stock/batch', [AdminPaceController::class, 'batchStock'])->name('paces.stock.batch');
         Route::get('/paces/{pace}', [AdminPaceController::class, 'show'])->name('paces.show');
+        Route::match(['put', 'patch'], '/paces/{pace}', [AdminPaceController::class, 'update'])->name('paces.update');
+        Route::delete('/paces/{pace}', [AdminPaceController::class, 'destroy'])->name('paces.destroy');
+        Route::post('/paces/{pace}/stock/receive', [AdminPaceController::class, 'receive'])->name('paces.stock.receive');
+        Route::patch('/paces/{pace}/stock/pool', [AdminPaceController::class, 'adjustPool'])->name('paces.stock.pool');
+        Route::post('/paces/{pace}/stock/distribute', [AdminPaceController::class, 'distribute'])->name('paces.stock.distribute');
+        Route::put('/paces/{pace}/stock/holdings/{teacher}', [AdminPaceController::class, 'setHolding'])->name('paces.stock.holding');
+        Route::get('/paces/{pace}/movements', [AdminPaceController::class, 'movements'])->name('paces.movements');
 
-        // The teachers' PACE stock requests: adjust, hand over (tops up the PACE's stock) or decline.
+        // The teachers' stock requests: adjust, give (from the pool) or decline.
         Route::get('/pace-requests', [AdminPaceRequestController::class, 'index'])->name('pace-requests.index');
         Route::match(['put', 'patch'], '/pace-requests/{paceRequest}', [AdminPaceRequestController::class, 'update'])->name('pace-requests.update');
+        Route::post('/pace-requests/batch', [AdminPaceRequestController::class, 'batch'])->name('pace-requests.batch');
         Route::post('/pace-requests/{paceRequest}/give', [AdminPaceRequestController::class, 'give'])->name('pace-requests.give');
         Route::post('/pace-requests/{paceRequest}/decline', [AdminPaceRequestController::class, 'decline'])->name('pace-requests.decline');
     });

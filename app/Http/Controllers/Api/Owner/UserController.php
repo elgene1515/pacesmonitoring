@@ -20,6 +20,6 @@ class UserController extends Controller
      */
     public function updateRole(UpdateUserRoleRequest $request, User $user): UserResource
     {
-        return new UserResource($this->users->changeRole($user, Role::from($request->validated('role'))));
+        return new UserResource($this->users->changeRole($user, Role::from($request->validated('role')), $request->user()));
     }
 }

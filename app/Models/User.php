@@ -8,7 +8,6 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -27,7 +26,13 @@ class User extends Authenticatable implements MustVerifyEmail
      */
     protected $fillable = [
         'name',
+        'first_name',
+        'middle_name',
+        'last_name',
+        'suffix',
         'email',
+        'phone',
+        'address',
         'password',
     ];
 
@@ -48,6 +53,7 @@ class User extends Authenticatable implements MustVerifyEmail
      */
     protected $casts = [
         'email_verified_at' => 'datetime',
+        'terms_accepted_at' => 'datetime',
         'role' => Role::class,
         'organization_id' => 'integer',
         'branch_id' => 'integer',
@@ -162,7 +168,7 @@ class User extends Authenticatable implements MustVerifyEmail
     }
 
     /**
-     * Only teachers (the users who own students, PACEs and grade levels).
+     * Only teachers (the users who hold teaching assignments and PACE stock).
      *
      * @param  \Illuminate\Database\Eloquent\Builder<\App\Models\User>  $query
      * @return \Illuminate\Database\Eloquent\Builder<\App\Models\User>
@@ -231,6 +237,74 @@ class User extends Authenticatable implements MustVerifyEmail
         return $this->hasMany(PaceRequest::class);
     }
 
+    /* ----------------------------------------------------------- teaching */
+
+    /**
+     * The section + subject pairs this teacher is in charge of.
+     */
+    public function teachingAssignments(): HasMany
+    {
+        return $this->hasMany(TeachingAssignment::class, 'teacher_id');
+    }
+
+    /**
+     * The teacher's requests to take on a section + subject.
+     */
+    public function teachingAssignmentRequests(): HasMany
+    {
+        return $this->hasMany(TeachingAssignmentRequest::class);
+    }
+
+    /**
+     * The sections this teacher teaches at least one subject in.
+     *
+     * @return \Illuminate\Database\Eloquent\Builder<\App\Models\Section>
+     */
+    public function sectionsQuery(): Builder
+    {
+        return Section::query()->ownedBy($this);
+    }
+
+    /**
+     * The students in those sections (one row each, however many of their
+     * subjects this teacher handles).
+     *
+     * @return \Illuminate\Database\Eloquent\Builder<\App\Models\Student>
+     */
+    public function studentsQuery(): Builder
+    {
+        return Student::query()->ownedBy($this);
+    }
+
+    /**
+     * The PACE records this teacher is in charge of: their assigned subjects,
+     * for the students of the sections they teach them in.
+     *
+     * @return \Illuminate\Database\Eloquent\Builder<\App\Models\PaceAssignment>
+     */
+    public function assignmentsQuery(): Builder
+    {
+        return PaceAssignment::query()->ownedBy($this);
+    }
+
+    /* -------------------------------------------------------------- stock */
+
+    /**
+     * The booklets this teacher has, per PACE.
+     */
+    public function paceStockHoldings(): HasMany
+    {
+        return $this->hasMany(PaceStockHolding::class);
+    }
+
+    /**
+     * The teacher's proposals to change a student's details.
+     */
+    public function studentChangeRequests(): HasMany
+    {
+        return $this->hasMany(StudentChangeRequest::class, 'requested_by');
+    }
+
     /* --------------------------------------------------------- school years */
 
     /**
@@ -277,35 +351,26 @@ class User extends Authenticatable implements MustVerifyEmail
     /* -------------------------------------------------------------- records */
 
     /**
-     * Grade levels (and, through them, subjects) created by this user.
+     * Grade levels this user set up (an audit trail, not an access boundary).
      */
-    public function gradeLevels(): HasMany
+    public function createdGradeLevels(): HasMany
     {
-        return $this->hasMany(GradeLevel::class);
+        return $this->hasMany(GradeLevel::class, 'created_by');
     }
 
     /**
-     * Students registered by this user.
+     * Students this user registered (an audit trail, not an access boundary).
      */
-    public function students(): HasMany
+    public function registeredStudents(): HasMany
     {
         return $this->hasMany(Student::class, 'created_by');
     }
 
     /**
-     * PACEs registered by this user.
+     * PACEs this user added to a catalog (an audit trail, not an access boundary).
      */
-    public function paces(): HasMany
+    public function registeredPaces(): HasMany
     {
         return $this->hasMany(Pace::class, 'created_by');
-    }
-
-    /**
-     * PACE assignments recorded for this user's students. Not a direct foreign
-     * key: pace_assignments has no owner column, so this joins through students.
-     */
-    public function assignments(): HasManyThrough
-    {
-        return $this->hasManyThrough(PaceAssignment::class, Student::class, 'created_by', 'student_id');
     }
 }

@@ -4,11 +4,17 @@ namespace App\Services;
 
 use App\Models\PaceAssignment;
 use App\Models\Student;
+use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * A student's PACE records, kept by the teacher assigned to the subject in
+ * the student's section. Booklets come from and go back to that teacher's
+ * own stock.
+ */
 class PaceAssignmentService
 {
     public function __construct(private readonly PaceStockService $stock)
@@ -16,25 +22,26 @@ class PaceAssignmentService
     }
 
     /**
-     * Assign one or more PACEs to a student under a single subject, school year and quarter.
-     * With an issued date, every PACE is issued right away, which takes one booklet
-     * from each PACE's stock (none is created when any of them is out of stock).
+     * Assign one or more PACEs to a student under a single subject, school year
+     * and quarter. With an issued date, every PACE is issued right away, which
+     * takes one booklet of each from the teacher's holdings (none is created
+     * when any of them is short).
      *
      * Expected keys: subject_id, pace_ids (int[]), school_year, quarter, issued_date (nullable).
      *
      * @param  array<string, mixed>  $data
      * @return \Illuminate\Database\Eloquent\Collection<int, \App\Models\PaceAssignment>
      *
-     * @throws \Illuminate\Validation\ValidationException  on `issued_date` when a PACE is out of stock
+     * @throws \Illuminate\Validation\ValidationException  on `issued_date` when a PACE is short
      */
-    public function assignMany(Student $student, array $data): Collection
+    public function assignMany(Student $student, array $data, User $teacher): Collection
     {
         $paceIds = array_values(array_unique(array_map('intval', $data['pace_ids'] ?? [])));
         $issuedDate = $data['issued_date'] ?? null;
 
-        $assignments = DB::transaction(function () use ($student, $data, $paceIds, $issuedDate): array {
+        $assignments = DB::transaction(function () use ($student, $data, $paceIds, $issuedDate, $teacher): array {
             if ($issuedDate !== null) {
-                $this->stock->consume($paceIds);
+                $this->stock->consume($teacher, $paceIds);
             }
 
             $created = [];
@@ -57,22 +64,21 @@ class PaceAssignmentService
         $query = PaceAssignment::query()->whereIn('pace_assignments.id', $ids)->with(['pace', 'subject']);
         $this->applyDefaultOrder($query);
 
-        return $query->get();
+        return $query->get()->each(fn (PaceAssignment $assignment) => $this->withTeacherStock($assignment, $teacher));
     }
 
     /**
-     * Update an assignment (pace, subject, period, dates, score, remarks).
-     *
-     * Issuing takes a booklet from the PACE's stock; un-issuing gives it back, and
-     * moving an issued record to another PACE moves the booklet along with it.
+     * Update a record (pace, subject, period, dates, score, remarks). Issuing
+     * takes a booklet from the teacher's stock; un-issuing gives it back, and
+     * moving an issued record to another PACE moves the booklet along.
      *
      * @param  array<string, mixed>  $data
      *
-     * @throws \Illuminate\Validation\ValidationException  on `issued_date` when the PACE is out of stock
+     * @throws \Illuminate\Validation\ValidationException  on `issued_date` when the PACE is short
      */
-    public function update(PaceAssignment $assignment, array $data): PaceAssignment
+    public function update(PaceAssignment $assignment, array $data, User $teacher): PaceAssignment
     {
-        return DB::transaction(function () use ($assignment, $data): PaceAssignment {
+        return DB::transaction(function () use ($assignment, $data, $teacher): PaceAssignment {
             $wasIssued = $assignment->issued_date !== null;
             $oldPaceId = $assignment->pace_id === null ? null : (int) $assignment->pace_id;
 
@@ -83,28 +89,41 @@ class PaceAssignmentService
 
             if ($isIssued && (! $wasIssued || $newPaceId !== $oldPaceId)) {
                 if ($wasIssued) {
-                    $this->stock->release($oldPaceId);
+                    $this->stock->release($teacher, $oldPaceId);
                 }
 
-                $this->stock->consume($newPaceId === null ? [] : [$newPaceId]);
+                $this->stock->consume($teacher, $newPaceId === null ? [] : [$newPaceId]);
             } elseif ($wasIssued && ! $isIssued) {
-                $this->stock->release($oldPaceId);
+                $this->stock->release($teacher, $oldPaceId);
             }
 
             $assignment->save();
 
-            return $assignment->load(['pace', 'subject']);
+            return $this->withTeacherStock($assignment->load(['pace', 'subject']), $teacher);
         });
     }
 
     /**
-     * Remove a single assignment record, returning its booklet to stock when it was issued.
+     * Put the teacher's booklet count (`my_stock`) on the record's PACE, so a
+     * response after issuing shows what is left.
      */
-    public function delete(PaceAssignment $assignment): void
+    protected function withTeacherStock(PaceAssignment $assignment, User $teacher): PaceAssignment
     {
-        DB::transaction(function () use ($assignment): void {
+        if ($assignment->relationLoaded('pace') && $assignment->pace !== null) {
+            $assignment->pace->setAttribute('my_stock', $assignment->pace->stockFor($teacher));
+        }
+
+        return $assignment;
+    }
+
+    /**
+     * Remove a record, returning its booklet to the teacher when it was issued.
+     */
+    public function delete(PaceAssignment $assignment, User $teacher): void
+    {
+        DB::transaction(function () use ($assignment, $teacher): void {
             if ($assignment->issued_date !== null) {
-                $this->stock->release($assignment->pace_id === null ? null : (int) $assignment->pace_id);
+                $this->stock->release($teacher, $assignment->pace_id === null ? null : (int) $assignment->pace_id);
             }
 
             $assignment->delete();
@@ -112,7 +131,7 @@ class PaceAssignmentService
     }
 
     /**
-     * A student's assignments, optionally narrowed by school_year, quarter and subject_id.
+     * A student's records, optionally narrowed by school_year, quarter and subject_id.
      *
      * @param  array<string, mixed>  $filters
      * @return \Illuminate\Database\Eloquent\Collection<int, \App\Models\PaceAssignment>
@@ -142,7 +161,7 @@ class PaceAssignmentService
     }
 
     /**
-     * Order assignments by school year (newest first), quarter, subject order,
+     * Order records by school year (newest first), quarter, subject order,
      * then PACE number (natural-ish: shorter numbers first).
      *
      * @param  \Illuminate\Database\Eloquent\Builder<\App\Models\PaceAssignment>|\Illuminate\Database\Eloquent\Relations\Relation  $query

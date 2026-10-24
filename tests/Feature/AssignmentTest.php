@@ -3,17 +3,23 @@
 namespace Tests\Feature;
 
 use App\Models\GradeLevel;
-use App\Models\Pace;
 use App\Models\PaceAssignment;
+use App\Models\Section;
 use App\Models\Student;
 use App\Models\Subject;
 use App\Models\User;
 
+/**
+ * A student's PACE records, kept by the teacher assigned to the subject in
+ * the student's section.
+ */
 class AssignmentTest extends ApiTestCase
 {
     private User $teacher;
 
     private GradeLevel $grade;
+
+    private Section $section;
 
     private Student $student;
 
@@ -30,22 +36,16 @@ class AssignmentTest extends ApiTestCase
         }
 
         $this->grade = $this->gradeLevel('Grade 4', $this->teacher);
-        $this->student = $this->student(['grade_level_id' => $this->grade->id], $this->teacher);
+        $this->section = $this->section($this->grade, $this->teacher);
+        $this->student = $this->student(['section_id' => $this->section->id], $this->teacher);
         $this->math = $this->subject($this->grade, 'Math');
     }
 
-    public function test_a_user_can_assign_many_paces_to_a_student(): void
+    public function test_a_teacher_can_assign_many_paces_to_a_student(): void
     {
         $this->signIn($this->teacher);
-        $paces = Pace::factory()->count(3)->sequence(
-            ['number' => '1040'],
-            ['number' => '1041'],
-            ['number' => '1042'],
-        )->create([
-            'created_by' => $this->teacher->id,
-            // Issued on assignment, which takes one booklet from each PACE's stock.
-            'stock' => 1,
-        ]);
+        // Issued on assignment, which takes one booklet of each from the teacher's holdings.
+        $paces = collect(['1040', '1041', '1042'])->map(fn (string $number) => $this->pace(['number' => $number, 'my_stock' => 1], $this->teacher));
 
         $response = $this->postJson('/api/students/'.$this->student->id.'/assignments', [
             'subject_id' => $this->math->id,
@@ -66,7 +66,8 @@ class AssignmentTest extends ApiTestCase
             ->assertJsonPath('data.0.quarter', 2)
             ->assertJsonPath('data.0.issued_date', '2026-09-01')
             ->assertJsonPath('data.0.date_tested', null)
-            ->assertJsonPath('data.0.score', null);
+            ->assertJsonPath('data.0.score', null)
+            ->assertJsonPath('data.0.pace.my_stock', 0);
 
         $this->assertDatabaseCount('pace_assignments', 3);
         $this->assertSame(3, $this->student->assignments()->where('subject_id', $this->math->id)->count());
@@ -137,10 +138,12 @@ class AssignmentTest extends ApiTestCase
         $this->assertDatabaseCount('pace_assignments', 1);
     }
 
-    public function test_a_subject_from_another_grade_level_is_rejected(): void
+    public function test_a_subject_the_teacher_does_not_teach_in_the_students_section_is_rejected(): void
     {
         $this->signIn($this->teacher);
         $pace = $this->pace([], $this->teacher);
+
+        // A subject of another grade level ...
         $otherSubject = $this->subject($this->gradeLevel('Grade 9', $this->teacher), 'Math');
 
         $this->postJson('/api/students/'.$this->student->id.'/assignments', [
@@ -152,10 +155,23 @@ class AssignmentTest extends ApiTestCase
             ->assertUnprocessable()
             ->assertJsonValidationErrors(['subject_id']);
 
+        // ... or a subject of the section that a colleague teaches.
+        $english = $this->subject($this->grade, 'English');
+        $this->assign($this->teacher($this->teacher->organization), $this->section, $english);
+
+        $this->postJson('/api/students/'.$this->student->id.'/assignments', [
+            'subject_id' => $english->id,
+            'pace_ids' => [$pace->id],
+            'school_year' => '2026-2027',
+            'quarter' => 1,
+        ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['subject_id']);
+
         $this->assertDatabaseCount('pace_assignments', 0);
     }
 
-    public function test_another_users_pace_cannot_be_assigned(): void
+    public function test_a_pace_of_another_branch_cannot_be_assigned(): void
     {
         $this->signIn($this->teacher);
         $foreignPace = $this->pace([], User::factory()->create());
@@ -214,7 +230,36 @@ class AssignmentTest extends ApiTestCase
         $this->getJson($base.'?subject_id='.$english->id)->assertOk()->assertJsonCount(1, 'data');
     }
 
-    public function test_a_user_can_record_a_score_and_test_date(): void
+    public function test_records_of_subjects_the_teacher_does_not_handle_are_visible_but_read_only(): void
+    {
+        $english = $this->subject($this->grade, 'English');
+        $colleague = $this->teacher($this->teacher->organization);
+        $this->assign($colleague, $this->section, $english);
+
+        $record = PaceAssignment::factory()->create(['student_id' => $this->student->id, 'subject_id' => $english->id]);
+
+        $this->signIn($this->teacher);
+
+        $this->getJson('/api/students/'.$this->student->id.'/assignments')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', $record->id);
+
+        $this->getJson('/api/students/'.$this->student->id)->assertOk()->assertJsonCount(1, 'data.assignments');
+
+        $this->putJson('/api/assignments/'.$record->id, ['score' => 50])->assertNotFound();
+        $this->deleteJson('/api/assignments/'.$record->id)->assertNotFound();
+
+        $this->assertDatabaseHas('pace_assignments', ['id' => $record->id, 'score' => null]);
+
+        // The colleague in charge of English may.
+        $this->forgetGuards();
+        $this->signIn($colleague);
+
+        $this->putJson('/api/assignments/'.$record->id, ['score' => 50])->assertOk()->assertJsonPath('data.score', 50);
+    }
+
+    public function test_a_teacher_can_record_a_score_and_test_date(): void
     {
         $this->signIn($this->teacher);
         $assignment = PaceAssignment::factory()->create([
@@ -244,7 +289,7 @@ class AssignmentTest extends ApiTestCase
         ]);
     }
 
-    public function test_a_user_can_flag_an_assignment_as_a_retake(): void
+    public function test_a_teacher_can_flag_an_assignment_as_a_retake(): void
     {
         $this->signIn($this->teacher);
         $assignment = PaceAssignment::factory()->create([
@@ -271,15 +316,15 @@ class AssignmentTest extends ApiTestCase
             ->assertJsonValidationErrors(['retake']);
     }
 
-    public function test_a_user_can_change_the_pace_and_clear_test_results(): void
+    public function test_a_teacher_can_change_the_pace_and_clear_test_results(): void
     {
         $this->signIn($this->teacher);
         $assignment = PaceAssignment::factory()->tested()->create([
             'student_id' => $this->student->id,
             'subject_id' => $this->math->id,
         ]);
-        // The record stays issued, so the new PACE needs a booklet in stock.
-        $newPace = $this->pace(['stock' => 1], $this->teacher);
+        // The record stays issued, so the teacher needs a booklet of the new PACE.
+        $newPace = $this->pace(['my_stock' => 1], $this->teacher);
 
         $this->putJson('/api/assignments/'.$assignment->id, [
             'pace_id' => $newPace->id,
@@ -367,6 +412,7 @@ class AssignmentTest extends ApiTestCase
             'student_id' => $this->student->id,
             'subject_id' => $this->math->id,
         ]);
+        // A subject the teacher teaches, but of another grade level (not the student's section).
         $otherSubject = $this->gradeLevel('Grade 10', $this->teacher)->subjects()->firstOrFail();
 
         $this->putJson('/api/assignments/'.$assignment->id, [
@@ -380,7 +426,7 @@ class AssignmentTest extends ApiTestCase
             ->assertJsonValidationErrors(['score', 'quarter', 'school_year', 'pace_id', 'subject_id']);
     }
 
-    public function test_a_user_can_delete_an_assignment(): void
+    public function test_a_teacher_can_delete_an_assignment(): void
     {
         $this->signIn($this->teacher);
         $assignment = PaceAssignment::factory()->create([
@@ -395,7 +441,7 @@ class AssignmentTest extends ApiTestCase
         $this->assertDatabaseHas('paces', ['id' => $assignment->pace_id]);
     }
 
-    public function test_another_users_assignments_are_not_reachable(): void
+    public function test_another_teachers_assignments_are_not_reachable(): void
     {
         $this->signIn($this->teacher);
         $stranger = User::factory()->create();

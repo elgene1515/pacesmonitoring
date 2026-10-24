@@ -2,7 +2,7 @@ import Student from '../models/Student';
 import SchoolYear from '../models/SchoolYear';
 
 /**
- * Home-page summary numbers (the signed-in user's own records, for one school year).
+ * Home-page summary numbers (what the teacher's teaching assignments cover, for one school year).
  */
 export default class DashboardService {
     /**
@@ -18,25 +18,26 @@ export default class DashboardService {
      * Without a school year id the API uses the user's current school year; `'all'`
      * requests all-time totals across every school year; a user with no school years
      * gets all-time counts either way, and `schoolYear` is then null.
-     * `filters` may carry gradeLevelId and/or subjectId to narrow the figures further.
+     * `filters` may carry gradeLevelId, sectionId, subjectId and/or paceId to narrow the figures further.
      *
-     * -> { schoolYear: SchoolYear|null, gradeLevels, students, paces, assignments, tested, scored, passed: number,
+     * -> { schoolYear: SchoolYear|null, gradeLevels, sections, students, paces, assignments, tested, scored, passed: number,
      *      issued, assigned, retakes, failedCount: number,
      *      recentStudents: Student[],
      *      byQuarter: { quarter, total, tested, issued, assigned, passed, failed, retakes: number }[],
      *      bySubject: { id, name, gradeLevelName: string, total, tested, issued, assigned: number, averageScore: ?number }[],
-     *      byGradeLevel: { id: number, name: string, total, male, female: number }[],
+     *      byGradeLevel: { id: number, name, branchName: string, total, male, female: number }[],
      *      yearTrend: { schoolYear: string, assignments, tested: number }[],
      *      failed: { id, studentId, quarter: number, score: number|null, failed, retake: boolean, studentName, subjectName, paceNumber, paceName, schoolYear, dateTested: string }[],
      *              (PACEs scored below 80 and/or flagged as retake, most recent first)
      *      topPerformers: { studentId, averageScore, scoredCount, passedCount, failedCount, retakeCount: number, studentName: string }[],
      *      scoreDistribution: { label: string, total: number }[],
-     *      totals: { schoolYears, gradeLevels, students, paces, assignments: number } }
+     *      totals: { schoolYears, gradeLevels, sections, students, paces, assignments: number } }
      */
     async summary(schoolYearId = null, filters = {}) {
         const body = await this.api.get('/dashboard/summary', {
             school_year_id: schoolYearId ?? '',
             grade_level_id: filters.gradeLevelId ?? '',
+            section_id: filters.sectionId ?? '',
             subject_id: filters.subjectId ?? '',
             pace_id: filters.paceId ?? '',
         });
@@ -46,6 +47,7 @@ export default class DashboardService {
         return {
             schoolYear: SchoolYear.fromJson(data.school_year),
             gradeLevels: Number(data.grade_levels ?? 0),
+            sections: Number(data.sections ?? 0),
             students: Number(data.students ?? 0),
             paces: Number(data.paces ?? 0),
             assignments: Number(data.assignments ?? 0),
@@ -80,6 +82,7 @@ export default class DashboardService {
             byGradeLevel: (data.by_grade_level ?? []).map((row) => ({
                 id: Number(row.id ?? 0),
                 name: row.name ?? '',
+                branchName: row.branch_name ?? '',
                 total: Number(row.total ?? 0),
                 male: Number(row.male ?? 0),
                 female: Number(row.female ?? 0),
@@ -119,6 +122,7 @@ export default class DashboardService {
             totals: {
                 schoolYears: Number(totals.school_years ?? 0),
                 gradeLevels: Number(totals.grade_levels ?? 0),
+                sections: Number(totals.sections ?? 0),
                 students: Number(totals.students ?? 0),
                 paces: Number(totals.paces ?? 0),
                 assignments: Number(totals.assignments ?? 0),
@@ -131,6 +135,7 @@ export default class DashboardService {
         return {
             schoolYear: null,
             gradeLevels: 0,
+            sections: 0,
             students: 0,
             paces: 0,
             assignments: 0,
@@ -149,7 +154,7 @@ export default class DashboardService {
             failed: [],
             topPerformers: [],
             scoreDistribution: [],
-            totals: { schoolYears: 0, gradeLevels: 0, students: 0, paces: 0, assignments: 0 },
+            totals: { schoolYears: 0, gradeLevels: 0, sections: 0, students: 0, paces: 0, assignments: 0 },
         };
     }
 }

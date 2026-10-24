@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Profile\UpdatePasswordRequest;
 use App\Http\Requests\Profile\UpdateProfileRequest;
 use App\Http\Resources\UserResource;
+use App\Support\PersonDetails;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Hash;
@@ -18,7 +19,12 @@ class ProfileController extends Controller
     public function update(UpdateProfileRequest $request): JsonResponse
     {
         $user = $request->user();
-        $user->fill($request->safe()->only(['name', 'email']));
+        $person = $request->person();
+
+        $user->fill($person + [
+            'name' => PersonDetails::fullName($person['first_name'], $person['middle_name'], $person['last_name'], $person['suffix']),
+            'email' => $request->validated('email'),
+        ]);
 
         // A new address has to be proven again.
         $emailChanged = $user->isDirty('email');

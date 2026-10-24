@@ -5,7 +5,8 @@ namespace App\Http\Requests\Assignment;
 use App\Enums\Quarter;
 use App\Models\Student;
 use App\Rules\AssignmentSchoolYear;
-use App\Rules\SubjectBelongsToGradeLevel;
+use App\Rules\StudentTakesSubject;
+use App\Rules\TeacherTeachesSubjectInSection;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -33,21 +34,22 @@ class StoreAssignmentRequest extends FormRequest
     public function rules(): array
     {
         $student = $this->route('student');
-        $gradeLevelId = $student instanceof Student ? (int) $student->grade_level_id : null;
+        $sectionId = $student instanceof Student ? (int) $student->section_id : null;
 
         return [
             'subject_id' => [
                 'required',
                 'integer',
                 Rule::exists('subjects', 'id'),
-                new SubjectBelongsToGradeLevel($gradeLevelId),
+                new TeacherTeachesSubjectInSection($sectionId, $this->user()?->id),
+                new StudentTakesSubject($student instanceof Student ? (int) $student->id : null),
             ],
             'pace_ids' => ['required', 'array', 'min:1'],
             'pace_ids.*' => [
                 'required',
                 'integer',
                 'distinct',
-                Rule::exists('paces', 'id')->where('created_by', $this->user()?->id),
+                Rule::exists('paces', 'id')->where('branch_id', $this->user()?->branch_id),
             ],
             'school_year' => [
                 'required',
@@ -84,6 +86,7 @@ class StoreAssignmentRequest extends FormRequest
     public function messages(): array
     {
         return [
+            'pace_ids.*.exists' => "The selected PACE is not in your branch's catalog.",
             'school_year.regex' => 'The school year must be in the format YYYY-YYYY.',
             'school_year.exists' => "The school year is not one of your organization's school years.",
         ];
@@ -96,12 +99,7 @@ class StoreAssignmentRequest extends FormRequest
     public function withValidator(Validator $validator): void
     {
         $validator->after(function (Validator $validator): void {
-            $failedAlready = array_filter(
-                $validator->errors()->keys(),
-                static fn (string $key): bool => in_array($key, ['subject_id', 'school_year'], true)
-            );
-
-            if ($failedAlready !== []) {
+            if ($validator->errors()->hasAny(['subject_id', 'school_year'])) {
                 return;
             }
 

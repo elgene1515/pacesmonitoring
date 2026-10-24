@@ -5,6 +5,7 @@ import { notify } from '../../stores/notifications';
 import { formatDate, pluralize, toIsoDate } from '../../core/format';
 import { PACE_REQUEST_STATUS_LABELS } from '../../models';
 import PaceRequestFormModal from '../paces/PaceRequestFormModal.vue';
+import BatchPaceRequestModal from '../paces/BatchPaceRequestModal.vue';
 import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import EmptyState from '../ui/EmptyState.vue';
 import StatusBadge from '../ui/StatusBadge.vue';
@@ -12,7 +13,8 @@ import AppIcon from '../ui/AppIcon.vue';
 
 /**
  * The teacher's PACE stock requests: what was asked, what the admin decided,
- * kept as history. Pending requests can still be edited or withdrawn.
+ * kept as history. New requests (one or several PACEs) go through the
+ * Request Stock dialog; pending requests can still be edited or withdrawn.
  */
 const STATUS_OPTIONS = [
     { value: '', label: 'All requests' },
@@ -22,8 +24,11 @@ const STATUS_OPTIONS = [
 const requests = usePaceRequestsStore();
 
 const statusFilter = ref('');
+/** The edit dialog for one pending request. */
 const formOpen = ref(false);
 const editing = ref(null);
+/** The Request Stock dialog for new requests. */
+const batchOpen = ref(false);
 const withdrawing = ref(null);
 const busy = ref(false);
 
@@ -69,11 +74,6 @@ function clearFilters() {
     statusFilter.value = '';
     dateFrom.value = '';
     dateTo.value = '';
-}
-
-function openNew() {
-    editing.value = null;
-    formOpen.value = true;
 }
 
 function openEdit(request) {
@@ -128,12 +128,12 @@ onMounted(() => {
             <div>
                 <h1>Stock requests</h1>
                 <p class="muted subtitle">
-                    Ask your school admin for PACE booklets. When a request for one of your registered PACEs is marked
-                    given, the booklets are added to that PACE's stock.
+                    Ask your school admin for PACE booklets. When a request is given, the booklets move from the
+                    branch pool to your own stock; a PACE that is not in the catalog yet is added to it.
                 </p>
             </div>
             <div class="page-actions">
-                <button type="button" class="btn" @click="openNew">New request</button>
+                <button type="button" class="btn" @click="batchOpen = true">Request Stock</button>
             </div>
         </div>
 
@@ -166,7 +166,7 @@ onMounted(() => {
             <EmptyState v-else-if="visible.length === 0" :message="emptyMessage">
                 <template #action>
                     <button v-if="hasFilters" type="button" class="btn btn-secondary btn-sm" @click="clearFilters">Clear filters</button>
-                    <button v-else type="button" class="btn btn-secondary btn-sm" @click="openNew">New request</button>
+                    <button v-else type="button" class="btn btn-secondary btn-sm" @click="batchOpen = true">Request Stock</button>
                 </template>
             </EmptyState>
 
@@ -199,7 +199,7 @@ onMounted(() => {
                                     {{ request.label }}
                                 </RouterLink>
                                 <span v-else class="name">{{ request.label }}</span>
-                                <span v-if="!request.isLinked" class="muted small">Not a registered PACE</span>
+                                <span v-if="!request.isLinked" class="muted small">Not in the catalog yet</span>
                             </td>
                             <td class="mono text-right" data-label="Quantity">{{ request.quantity }}</td>
                             <td class="nowrap" data-label="Needed by">{{ formatDate(request.neededBy) || '—' }}</td>
@@ -239,6 +239,7 @@ onMounted(() => {
         </div>
 
         <PaceRequestFormModal v-model="formOpen" :request="editing" />
+        <BatchPaceRequestModal v-model="batchOpen" />
 
         <ConfirmDialog
             :model-value="withdrawing !== null"

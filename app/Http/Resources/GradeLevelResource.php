@@ -18,21 +18,27 @@ class GradeLevelResource extends JsonResource
     {
         return [
             'id' => $this->id,
-            'user_id' => $this->user_id,
+            'branch_id' => $this->branch_id,
+            'school_year_id' => $this->school_year_id,
+            'created_by' => $this->created_by,
             'name' => $this->name,
             'sort_order' => $this->sort_order,
-            'school_year_id' => $this->school_year_id,
             'school_year' => new SchoolYearResource($this->whenLoaded('schoolYear')),
-            // The teacher who owns the grade level; only loaded for the admin pages.
-            'teacher' => $this->whenLoaded('user', fn () => $this->user === null ? null : [
-                'id' => $this->user->id,
-                'name' => $this->user->name,
-                'email' => $this->user->email,
-                'branch_name' => $this->user->relationLoaded('branch') ? $this->user->branch?->name : null,
+            'branch' => $this->whenLoaded('branch', fn () => $this->branch === null ? null : [
+                'id' => $this->branch->id,
+                'name' => $this->branch->name,
+                'code' => $this->branch->code,
+                // The school the branch belongs to, when the query loaded it (the section page names it).
+                'organization' => $this->branch->relationLoaded('organization') && $this->branch->organization !== null ? [
+                    'id' => $this->branch->organization->id,
+                    'name' => $this->branch->organization->name,
+                ] : null,
             ]),
             'students_count' => $this->whenCounted('students'),
             'subjects_count' => $this->whenCounted('subjects'),
+            'sections_count' => $this->whenCounted('sections'),
             'subjects' => SubjectResource::collection($this->whenLoaded('subjects')),
+            'sections' => SectionResource::collection($this->whenLoaded('sections')),
             // Records under every subject; counts present when loaded with PaceAssignment::statusCounts().
             'assignments_count' => $this->whenCounted('assignments'),
             'tested_count' => $this->whenCounted('tested'),

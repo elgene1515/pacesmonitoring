@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\Admin;
 
+use App\Enums\Role;
 use App\Http\Controllers\Api\Concerns\ResolvesOrganizationScope;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\MoveUserBranchRequest;
@@ -14,6 +15,7 @@ use App\Services\Admin\AdminUserService;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Http\Response;
+use Illuminate\Validation\Rule;
 
 /**
  * Member accounts of the organization in scope (every account, for the owner).
@@ -77,11 +79,28 @@ class UserController extends Controller
 
         $branch = Branch::query()->findOrFail((int) $request->validated('branch_id'));
 
-        return new UserResource($this->users->moveToBranch($user, $branch));
+        return new UserResource($this->users->moveToBranch($user, $branch, $request->user()));
     }
 
     /**
-     * Remove a teacher from the organization (their records stay theirs).
+     * Make a member a school administrator or a teacher (`role`), within the
+     * plan's admin limit; never your own role, never the last administrator.
+     */
+    public function updateRole(Request $request, User $user): UserResource
+    {
+        $this->assertUserInScope($request, $user);
+
+        $data = $request->validate([
+            'role' => ['required', 'string', Rule::in([Role::Admin->value, Role::Teacher->value])],
+        ]);
+
+        return new UserResource($this->users->changeRole($user, Role::from($data['role']), $request->user()));
+    }
+
+    /**
+     * Remove a teacher from the organization: their teaching assignments end
+     * and their booklets return to the pools; the students and records stay
+     * with the school.
      */
     public function destroyMembership(Request $request, User $user): Response
     {
@@ -91,7 +110,7 @@ class UserController extends Controller
             abort(422, 'You cannot remove yourself.');
         }
 
-        $this->users->removeFromOrganization($user);
+        $this->users->removeFromOrganization($user, $request->user());
 
         return response()->noContent();
     }

@@ -2,19 +2,20 @@
 
 namespace App\Http\Requests\JoinRequest;
 
+use App\Enums\Role;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
 class StoreJoinRequestRequest extends FormRequest
 {
     /**
-     * Only a teacher who does not belong to an organization yet.
+     * A teacher, or an admin-type account, that does not belong to an organization yet.
      */
     public function authorize(): bool
     {
         $user = $this->user();
 
-        return $user !== null && $user->isTeacher() && ! $user->hasOrganization();
+        return $user !== null && ($user->isTeacher() || $user->isAdmin()) && ! $user->hasOrganization();
     }
 
     /**
@@ -28,6 +29,8 @@ class StoreJoinRequestRequest extends FormRequest
             'organization_code' => ['required', 'string', 'max:16'],
             'branch_id' => ['required', 'integer', Rule::exists('branches', 'id')],
             'message' => ['nullable', 'string', 'max:255'],
+            // Admin-type accounts may ask to join as an administrator; teachers always join as teachers.
+            'role' => ['nullable', 'string', Rule::in([Role::Teacher->value, Role::Admin->value])],
         ];
     }
 

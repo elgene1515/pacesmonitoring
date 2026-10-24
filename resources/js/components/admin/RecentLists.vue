@@ -10,6 +10,8 @@ defineProps({
     students: { type: Array, default: () => [] },
     users: { type: Array, default: () => [] },
     loading: { type: Boolean, default: false },
+    /** Every organization at once (the owner): each branch says which organization it belongs to. */
+    showOrganization: { type: Boolean, default: false },
 });
 
 function roleTone(user) {
@@ -43,8 +45,8 @@ function roleTone(user) {
                 <thead>
                     <tr>
                         <th>Name</th>
-                        <th>Grade level</th>
-                        <th>Teacher</th>
+                        <th>Class</th>
+                        <th>Branch</th>
                         <th class="table-actions"><span class="sr-only">Actions</span></th>
                     </tr>
                 </thead>
@@ -55,8 +57,10 @@ function roleTone(user) {
                                 {{ student.displayName }}
                             </RouterLink>
                         </td>
-                        <td class="ellipsis">{{ student.gradeLevelName || '—' }}</td>
-                        <td class="ellipsis">{{ student.creatorName || '—' }}</td>
+                        <td class="ellipsis" :title="student.classLabel">{{ student.classLabel || '—' }}</td>
+                        <td class="ellipsis" :title="showOrganization ? student.organizationName : ''">
+                            {{ [student.branchName, showOrganization ? student.organizationName : ''].filter(Boolean).join(' · ') || '—' }}
+                        </td>
                         <td class="table-actions">
                             <RouterLink
                                 :to="{ name: 'admin-student-detail', params: { id: student.id } }"
@@ -103,7 +107,7 @@ function roleTone(user) {
                             <RouterLink :to="{ name: 'admin-user-detail', params: { id: user.id } }" :title="user.email">
                                 {{ user.name }}
                             </RouterLink>
-                            <span v-if="user.branchLabel" class="muted small">{{ user.branchLabel }}</span>
+                            <span v-if="user.branchLabel || (showOrganization && user.organizationName)" class="muted small">{{ [user.branchLabel, showOrganization ? user.organizationName : ''].filter(Boolean).join(' · ') }}</span>
                         </td>
                         <td><StatusBadge :tone="roleTone(user)">{{ user.roleLabel }}</StatusBadge></td>
                         <td class="nowrap muted">{{ formatDate(user.createdAt) || '—' }}</td>

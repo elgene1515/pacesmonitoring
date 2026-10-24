@@ -1,12 +1,18 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import { adminService } from '../../../services';
+import { useAuthStore } from '../../../stores/auth';
 import { notify } from '../../../stores/notifications';
 import { PaceAssignment, Subject } from '../../../models';
 import { formatDate, formatScore, pluralize } from '../../../core/format';
 import { currentSchoolYear, QUARTERS, quarterLabel } from '../../../core/schoolYear';
 import { buildRecordRings } from '../../../core/recordRings';
 import AssignmentTable from '../../assignments/AssignmentTable.vue';
+import StudentFormModal from '../../students/StudentFormModal.vue';
+import EnrollmentHistory from '../../students/EnrollmentHistory.vue';
+import StudentDetailsCard from '../../students/StudentDetailsCard.vue';
+import ConfirmDialog from '../../ui/ConfirmDialog.vue';
 import EmptyState from '../../ui/EmptyState.vue';
 import AppIcon from '../../ui/AppIcon.vue';
 import LayeredRings from '../../charts/LayeredRings.vue';
@@ -15,8 +21,64 @@ const props = defineProps({
     id: { type: Number, required: true },
 });
 
+const auth = useAuthStore();
+const router = useRouter();
+
 const student = ref(null);
 const schoolYears = ref([]);
+
+/* Edit / move / delete */
+const editOpen = ref(false);
+const formSections = ref([]);
+const loadingFormSections = ref(false);
+const deleting = ref(false);
+const removing = ref(false);
+
+/** The student's teachers, by name. */
+const teacherNames = computed(() => (student.value?.teachers ?? []).map((teacher) => teacher.name).join(', '));
+
+/** Who teaches a subject in the student's section ("" when nobody does). */
+function teacherOf(subject) {
+    return student.value?.section?.teacherFor(subject.id)?.name ?? '';
+}
+
+/** Every section of the school for the edit form (moving the student). */
+async function openEdit() {
+    editOpen.value = true;
+    loadingFormSections.value = true;
+
+    try {
+        const levels = await adminService.listGradeLevels();
+
+        formSections.value = levels.flatMap((level) => level.sections.map((section) => {
+            section.gradeLevel = level;
+            return section;
+        }));
+    } catch (err) {
+        notify.error(err?.message ?? 'Failed to load the sections.');
+    } finally {
+        loadingFormSections.value = false;
+    }
+}
+
+async function confirmRemove() {
+    if (removing.value || !student.value) {
+        return;
+    }
+
+    removing.value = true;
+
+    try {
+        await adminService.removeStudent(student.value.id);
+        notify.success(`${student.value.displayName} deleted.`);
+        deleting.value = false;
+        router.push({ name: 'admin-students' });
+    } catch (err) {
+        notify.error(err?.message ?? 'Unable to delete the student.');
+    } finally {
+        removing.value = false;
+    }
+}
 const assignments = ref([]);
 const loading = ref(true);
 const loadError = ref('');
@@ -43,6 +105,9 @@ const yearOptions = computed(() => {
 });
 
 /** The school year the student's current grade level (and so its subjects) is registered under. */
+/** "Main Campus · Grace Christian Academy": the platform owner looks at students of many schools, so the branch says which school it belongs to. */
+const branchLabel = computed(() => [student.value?.branchName, auth.isPlatform ? student.value?.organizationName : ''].filter(Boolean).join(' · '));
+
 const gradeLevelYear = computed(() => student.value?.gradeLevel?.schoolYear ?? null);
 
 /** True when the selected school year is the student's current grade-level year. */
@@ -52,8 +117,8 @@ const isCurrentYear = computed(() => Boolean(gradeLevelYear.value) && gradeLevel
 const viewingHistory = computed(() => Boolean(student.value) && !isCurrentYear.value);
 
 /**
- * Subjects shown for the selected school year: the current grade level's
- * subjects for the current year, otherwise the subjects that have records in
+ * Subjects shown for the selected school year: the subjects this student takes
+ * for the current year, otherwise the subjects that have records in
  * that year (this is a read-only view, so there is no "live" distinction).
  */
 const subjects = computed(() => {
@@ -62,7 +127,7 @@ const subjects = computed(() => {
     }
 
     if (isCurrentYear.value) {
-        return student.value.gradeLevel?.subjects ?? [];
+        return student.value.subjects ?? [];
     }
 
     const seen = new Map();
@@ -209,11 +274,15 @@ onMounted(load);
                 <div>
                     <h1>{{ student.displayName }}</h1>
                     <p class="muted subtitle">
-                        {{ student.gradeLevelName || 'No grade level' }}
+                        {{ student.classLabel || 'No section' }}
                         · Registered in SY {{ student.schoolYearName || gradeLevelYear?.name || '—' }}
-                        · Teacher: {{ student.creatorName || '—' }}
+                        <template v-if="branchLabel">· {{ branchLabel }}</template>
                         · {{ pluralize(assignments.length, 'PACE record') }}
                     </p>
+                </div>
+                <div class="page-actions">
+                    <button type="button" class="btn btn-secondary" :disabled="!auth.canWrite" @click="openEdit">Edit or move</button>
+                    <button type="button" class="btn btn-secondary text-danger" :disabled="!auth.canWrite" @click="deleting = true">Delete</button>
                 </div>
             </div>
 
@@ -222,6 +291,10 @@ onMounted(load);
                 <section class="card info-card">
                     <h2 class="card-title">Student information</h2>
                     <dl class="info">
+                        <div class="info-item">
+                            <dt>Student ID number</dt>
+                            <dd class="mono">{{ student.studentNumber || '—' }}</dd>
+                        </div>
                         <div class="info-item">
                             <dt>Full name</dt>
                             <dd>{{ student.fullName }}</dd>
@@ -263,21 +336,34 @@ onMounted(load);
                             <dd class="mono">{{ student.schoolYearName || gradeLevelYear?.name || '—' }}</dd>
                         </div>
                         <div class="info-item">
-                            <dt>Teacher</dt>
+                            <dt>Section</dt>
                             <dd>
-                                <RouterLink v-if="student.creator" :to="{ name: 'admin-user-detail', params: { id: student.creator.id } }">
-                                    {{ student.creatorName }}
+                                <RouterLink v-if="student.sectionId" :to="{ name: 'admin-section-detail', params: { id: student.sectionId } }">
+                                    {{ student.sectionName || 'Section' }}
                                 </RouterLink>
                                 <span v-else>—</span>
                             </dd>
                         </div>
                         <div class="info-item">
-                            <dt>School</dt>
-                            <dd>{{ student.creatorOrganizationName || '—' }}</dd>
+                            <dt>Branch</dt>
+                            <dd>{{ student.branchName || '—' }}</dd>
                         </div>
                         <div class="info-item">
-                            <dt>Branch</dt>
-                            <dd>{{ student.creatorBranchName || '—' }}</dd>
+                            <dt>Teachers</dt>
+                            <dd>{{ teacherNames || '—' }}</dd>
+                        </div>
+                        <div class="info-item info-wide">
+                            <dt>Subjects taken</dt>
+                            <dd>{{ student.subjectNames || '—' }}</dd>
+                        </div>
+                        <div class="info-item">
+                            <dt>Registered by</dt>
+                            <dd>
+                                <RouterLink v-if="student.registeredBy" :to="{ name: 'admin-user-detail', params: { id: student.registeredBy.id } }">
+                                    {{ student.registeredByName }}
+                                </RouterLink>
+                                <span v-else>—</span>
+                            </dd>
                         </div>
                         <div class="info-item">
                             <dt>Registered</dt>
@@ -323,6 +409,10 @@ onMounted(load);
                     </p>
                 </section>
             </div>
+
+            <StudentDetailsCard :student="student" />
+
+            <EnrollmentHistory :enrollments="student.enrollments" :show-branch="(auth.organization?.branchesCount ?? 0) > 1 || auth.isPlatform" />
 
             <section class="card projection">
                 <h2 class="card-title">PACE Projection · SY {{ schoolYear }}</h2>
@@ -447,6 +537,7 @@ onMounted(load);
                                     <RouterLink :to="{ name: 'admin-subject-detail', params: { id: subject.id } }" :title="`View ${subject.name}`">{{ subject.name }}</RouterLink>
                                 </h3>
                                 <p class="muted subject-meta">
+                                    <template v-if="isCurrentYear">{{ teacherOf(subject) ? `Taught by ${teacherOf(subject)}` : 'No teacher yet' }} · </template>
                                     <template v-if="subjectSummary(subject).total === 0">No PACEs assigned</template>
                                     <template v-else>
                                         {{ pluralize(subjectSummary(subject).total, 'PACE') }}
@@ -480,6 +571,26 @@ onMounted(load);
                     </section>
                 </div>
             </section>
+
+            <StudentFormModal
+                v-model="editOpen"
+                admin
+                :student="student"
+                :sections="formSections"
+                :loading-sections="loadingFormSections"
+                @saved="load"
+            />
+
+            <ConfirmDialog
+                :model-value="deleting"
+                title="Delete student"
+                :busy="removing"
+                @update:model-value="deleting = false"
+                @confirm="confirmRemove"
+            >
+                Delete <strong>{{ student.displayName }}</strong>? All of their PACE records will be deleted as well.
+                This cannot be undone.
+            </ConfirmDialog>
         </template>
     </div>
 </template>
@@ -604,6 +715,10 @@ dl.info {
 
 .info-item dd {
     margin: 0;
+}
+
+.info-wide {
+    grid-column: 1 / -1;
 }
 
 .projection-summary {

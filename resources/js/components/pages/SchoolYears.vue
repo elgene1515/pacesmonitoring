@@ -140,8 +140,15 @@ onMounted(() => {
                             <td class="mono text-right">
                                 <RouterLink
                                     v-if="!isAdmin && year.gradeLevelsCount"
-                                    :to="{ name: 'grade-levels', query: { school_year: year.id } }"
-                                    :title="`View the grade levels in SY ${year.name}`"
+                                    :to="{ name: 'classes', query: { school_year: year.id } }"
+                                    :title="`View your classes in SY ${year.name}`"
+                                >
+                                    {{ year.gradeLevelsCount }}
+                                </RouterLink>
+                                <RouterLink
+                                    v-else-if="isAdmin && year.gradeLevelsCount"
+                                    :to="{ name: 'admin-grade-levels', query: { school_year: year.id } }"
+                                    :title="`View the grade levels of SY ${year.name}`"
                                 >
                                     {{ year.gradeLevelsCount }}
                                 </RouterLink>

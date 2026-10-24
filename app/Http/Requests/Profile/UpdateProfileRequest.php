@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests\Profile;
 
+use App\Support\PersonDetails;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -22,9 +23,8 @@ class UpdateProfileRequest extends FormRequest
      */
     public function rules(): array
     {
-        return [
+        return PersonDetails::rules() + [
             'current_password' => ['required', 'string', 'current_password:web'],
-            'name' => ['required', 'string', 'max:255'],
             'email' => [
                 'required',
                 'string',
@@ -36,13 +36,31 @@ class UpdateProfileRequest extends FormRequest
     }
 
     /**
+     * The name parts and contact details, trimmed.
+     *
+     * @return array<string, string|null>
+     */
+    public function person(): array
+    {
+        return PersonDetails::clean($this->validated());
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public function attributes(): array
+    {
+        return PersonDetails::attributes();
+    }
+
+    /**
      * Custom validation messages.
      *
      * @return array<string, string>
      */
     public function messages(): array
     {
-        return [
+        return PersonDetails::messages() + [
             'current_password.required' => 'Enter your current password to save these changes.',
             'current_password.current_password' => 'The current password is incorrect.',
         ];

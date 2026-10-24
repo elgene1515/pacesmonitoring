@@ -4,26 +4,27 @@ import { studentService } from '../services';
 import { notify } from './notifications';
 
 /**
- * Student master list.
+ * The students of the teacher's sections.
  *
  *  items                    ref<Student[]>
  *  loading                  ref<boolean>
  *  loaded                   ref<boolean>
- *  filters                  reactive<{ search: string, grade_level_id: number|'' }>
+ *  filters                  reactive<{ search: string, section_id, grade_level_id, school_year_id: number|'' }>
  *  count                    computed<number>
  *  fetch(overrides?)        merges overrides into filters, reloads items (toasts on failure) -> Promise<Student[]>
  *  create(payload)          payload: Student | snake_case object -> Promise<Student>   (throws ApiError)
- *  update(id, payload)      -> Promise<Student>                                        (throws ApiError)
- *  remove(id)               -> Promise<void>                                           (throws ApiError)
  *  byId(id)                 -> Student|undefined (from the loaded list)
  *  upsert(student)          insert or replace in items (keeps list sorted)
  *  resetFilters()
+ *
+ * Teachers cannot edit or remove students: they propose changes through the
+ * studentChangeRequests store, and the admin edits, moves and removes.
  */
 export const useStudentsStore = defineStore('students', () => {
     const items = ref([]);
     const loading = ref(false);
     const loaded = ref(false);
-    const filters = reactive({ search: '', grade_level_id: '', school_year_id: '' });
+    const filters = reactive({ search: '', section_id: '', grade_level_id: '', school_year_id: '' });
 
     const count = computed(() => items.value.length);
 
@@ -56,6 +57,7 @@ export const useStudentsStore = defineStore('students', () => {
 
     function resetFilters() {
         filters.search = '';
+        filters.section_id = '';
         filters.grade_level_id = '';
         filters.school_year_id = '';
     }
@@ -82,18 +84,6 @@ export const useStudentsStore = defineStore('students', () => {
         return student;
     }
 
-    async function update(id, payload) {
-        const student = await studentService.update(id, payload);
-        upsert(student);
-        return student;
-    }
-
-    async function remove(id) {
-        await studentService.remove(id);
-        const numeric = Number(id);
-        items.value = items.value.filter((student) => student.id !== numeric);
-    }
-
     /** Forget the loaded list (called when the session ends so another user never sees it). */
     function reset() {
         items.value = [];
@@ -110,8 +100,6 @@ export const useStudentsStore = defineStore('students', () => {
         count,
         fetch,
         create,
-        update,
-        remove,
         byId,
         upsert,
         resetFilters,

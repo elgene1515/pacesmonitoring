@@ -1,10 +1,15 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue';
 import { adminService } from '../../../services';
+import { useAuthStore } from '../../../stores/auth';
+import { notify } from '../../../stores/notifications';
 import { formatDate, formatScore, pluralize } from '../../../core/format';
 import { buildRecordRings } from '../../../core/recordRings';
+import PaceFormModal from '../../paces/PaceFormModal.vue';
+import StockActionModal from '../../paces/StockActionModal.vue';
 import EmptyState from '../../ui/EmptyState.vue';
 import StatusBadge from '../../ui/StatusBadge.vue';
+import AppIcon from '../../ui/AppIcon.vue';
 import LayeredRings from '../../charts/LayeredRings.vue';
 import PaceRecordsExplorer from '../../assignments/PaceRecordsExplorer.vue';
 
@@ -15,11 +20,29 @@ const props = defineProps({
 /** Legend / table order shared with the other pages: tested / issued / assigned. */
 const RECORD_ORDER = ['tested', 'issued', 'assigned'];
 
+const auth = useAuthStore();
+
 const pace = ref(null);
 const loading = ref(true);
 const loadError = ref('');
 
+const movements = ref([]);
+const loadingMovements = ref(false);
+const teachers = ref([]);
+
+const editOpen = ref(false);
+const stockOpen = ref(false);
+const stockMode = ref('receive');
+const stockTeacherId = ref(null);
+
 const records = computed(() => pace.value?.assignments ?? []);
+
+/** "School · #1001 · English": the platform owner looks at PACEs of many schools, so the school leads. */
+const heading = computed(() => {
+    const school = auth.isPlatform ? pace.value?.organizationName : '';
+
+    return school ? `${school} · ${pace.value.label}` : (pace.value?.label ?? '');
+});
 
 /** The rows the assignments table is currently showing (follows its search and filters). */
 const shownRecords = ref([]);
@@ -28,6 +51,11 @@ const shownRecords = ref([]);
 const shownRings = computed(() => buildRecordRings(shownRecords.value));
 
 const isNarrowed = computed(() => shownRecords.value.length !== records.value.length);
+
+/** Teachers holding booklets of this PACE, most first. */
+const holdings = computed(() => (pace.value?.holdings ?? [])
+    .filter((holding) => holding.quantity > 0)
+    .sort((a, b) => b.quantity - a.quantity || String(a.teacher?.name ?? '').localeCompare(String(b.teacher?.name ?? ''))));
 
 /** Subjects this PACE has been assigned under, for the table's subject filter. */
 const subjects = computed(() => {
@@ -59,12 +87,48 @@ async function load() {
 
     try {
         pace.value = await adminService.getPace(props.id);
+        loadMovements();
+
+        if (teachers.value.length === 0) {
+            loadTeachers();
+        }
     } catch (err) {
         pace.value = null;
         loadError.value = err?.isNotFound ? 'This PACE could not be found.' : (err?.message ?? 'Failed to load the PACE.');
     } finally {
         loading.value = false;
     }
+}
+
+async function loadMovements() {
+    loadingMovements.value = true;
+
+    try {
+        movements.value = await adminService.listMovements(props.id);
+    } catch (err) {
+        notify.error(err?.message ?? 'Failed to load the stock ledger.');
+    } finally {
+        loadingMovements.value = false;
+    }
+}
+
+async function loadTeachers() {
+    try {
+        teachers.value = await adminService.listTeachers({ branch_id: pace.value?.branchId ?? '' });
+    } catch {
+        teachers.value = [];
+    }
+}
+
+function openStock(mode, teacherId = null) {
+    stockMode.value = mode;
+    stockTeacherId.value = teacherId;
+    stockOpen.value = true;
+}
+
+/** A stock move changes the pool, the holdings and the ledger: reload them all. */
+function onStockSaved() {
+    load();
 }
 
 watch(() => props.id, load);
@@ -75,22 +139,30 @@ onMounted(load);
 <template>
     <div class="admin-pace-detail">
         <p class="back">
-            <RouterLink :to="{ name: 'admin-students' }">&larr; Students</RouterLink>
+            <RouterLink :to="{ name: 'admin-paces' }">&larr; PACEs</RouterLink>
         </p>
 
-        <p v-if="loading" class="muted">Loading…</p>
+        <p v-if="loading && !pace" class="muted">Loading…</p>
 
         <EmptyState v-else-if="!pace" :message="loadError">
             <template #action>
-                <RouterLink :to="{ name: 'admin-students' }" class="btn btn-secondary btn-sm">Back to students</RouterLink>
+                <RouterLink :to="{ name: 'admin-paces' }" class="btn btn-secondary btn-sm">Back to PACEs</RouterLink>
             </template>
         </EmptyState>
 
         <template v-else>
             <div class="page-header">
                 <div>
-                    <h1>{{ pace.label }}</h1>
-                    <p class="muted subtitle">{{ pluralize(records.length, 'assignment') }}</p>
+                    <h1>{{ heading }}</h1>
+                    <p class="muted subtitle">
+                        {{ pace.branchName ? `${pace.branchName} catalog · ` : '' }}{{ pluralize(records.length, 'assignment') }}
+                    </p>
+                </div>
+                <div class="page-actions">
+                    <button type="button" class="btn" :disabled="!auth.canWrite" @click="openStock('receive')">Receive booklets</button>
+                    <button type="button" class="btn btn-secondary" :disabled="!auth.canWrite || !pace.hasPoolStock" @click="openStock('distribute')">Give to a teacher</button>
+                    <button type="button" class="btn btn-secondary" :disabled="!auth.canWrite" @click="openStock('adjust')">Correct pool count</button>
+                    <button type="button" class="btn btn-secondary" :disabled="!auth.canWrite" @click="editOpen = true">Edit</button>
                 </div>
             </div>
 
@@ -108,26 +180,27 @@ onMounted(load);
                             <dd>{{ pace.name }}</dd>
                         </div>
                         <div class="info-item">
-                            <dt>Teacher</dt>
+                            <dt>Branch</dt>
+                            <dd>{{ pace.branchName || '—' }}</dd>
+                        </div>
+                        <div class="info-item">
+                            <dt>Pool</dt>
                             <dd>
-                                <RouterLink v-if="pace.teacher" :to="{ name: 'admin-user-detail', params: { id: pace.teacher.id } }">
-                                    {{ pace.teacherName }}
-                                </RouterLink>
-                                <span v-else>—</span>
+                                <span class="mono stock-value" :class="`level-${pace.poolLevel}`">{{ pace.poolStock }}</span>
+                                <StatusBadge :tone="pace.poolTone">{{ pace.poolLabel }}</StatusBadge>
                             </dd>
                         </div>
                         <div class="info-item">
-                            <dt>Branch</dt>
-                            <dd>{{ pace.teacherBranchName || '—' }}</dd>
+                            <dt>Held by teachers</dt>
+                            <dd class="mono">{{ pace.holdingsTotal ?? 0 }}</dd>
                         </div>
                         <div class="info-item">
-                            <dt>Teacher's stock</dt>
+                            <dt>Stock requests</dt>
                             <dd>
-                                <span class="mono stock-value">{{ pace.stock }}</span>
-                                <StatusBadge :tone="pace.stockTone" class="stock-badge">{{ pace.stockLabel }}</StatusBadge>
-                                <RouterLink v-if="pace.hasPendingRequest" :to="{ name: 'admin-pace-requests' }" class="small">
-                                    {{ pluralize(pace.pendingRequestsCount, 'stock request') }} pending
+                                <RouterLink v-if="pace.hasPendingRequest" :to="{ name: 'admin-pace-requests' }">
+                                    {{ pluralize(pace.pendingRequestsCount, 'pending request') }}
                                 </RouterLink>
+                                <span v-else class="muted">None pending</span>
                             </dd>
                         </div>
                         <div class="info-item">
@@ -165,6 +238,103 @@ onMounted(load);
                 </section>
             </div>
 
+            <div class="grid-2 pair">
+                <section class="card block">
+                    <div class="block-header">
+                        <h2 class="card-title">Teachers' booklets</h2>
+                        <span class="muted small-note">{{ pluralize(holdings.length, 'teacher') }}</span>
+                    </div>
+
+                    <EmptyState v-if="holdings.length === 0" compact message="No teacher holds booklets of this PACE.">
+                        <template #action>
+                            <button type="button" class="btn btn-link btn-sm" :disabled="!auth.canWrite || !pace.hasPoolStock" @click="openStock('distribute')">
+                                Give some to a teacher
+                            </button>
+                        </template>
+                    </EmptyState>
+
+                    <table v-else class="table holdings">
+                        <colgroup>
+                            <col />
+                            <col class="col-qty" />
+                            <col class="col-set" />
+                        </colgroup>
+                        <thead>
+                            <tr>
+                                <th>Teacher</th>
+                                <th class="text-right">Booklets</th>
+                                <th class="table-actions"><span class="sr-only">Actions</span></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="holding in holdings" :key="holding.teacherId">
+                                <td class="ellipsis">
+                                    <RouterLink :to="{ name: 'admin-user-detail', params: { id: holding.teacherId } }">
+                                        {{ holding.teacher?.name || `Teacher #${holding.teacherId}` }}
+                                    </RouterLink>
+                                </td>
+                                <td class="mono text-right">{{ holding.quantity }}</td>
+                                <td class="table-actions">
+                                    <button
+                                        type="button"
+                                        class="btn btn-link btn-sm btn-icon"
+                                        :title="`Set how many booklets ${holding.teacher?.name ?? 'this teacher'} holds`"
+                                        :aria-label="`Set the booklets of ${holding.teacher?.name ?? 'this teacher'}`"
+                                        :disabled="!auth.canWrite"
+                                        @click="openStock('holding', holding.teacherId)"
+                                    >
+                                        <AppIcon name="pencil" />
+                                    </button>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </section>
+
+                <section class="card block">
+                    <div class="block-header">
+                        <h2 class="card-title">Stock ledger</h2>
+                        <span class="muted small-note">Newest first</span>
+                    </div>
+
+                    <p v-if="loadingMovements && movements.length === 0" class="muted state">Loading…</p>
+
+                    <EmptyState v-else-if="movements.length === 0" compact message="No stock movements yet." />
+
+                    <div v-else class="ledger-wrap">
+                        <table class="table ledger">
+                            <colgroup>
+                                <col class="col-when" />
+                                <col />
+                                <col class="col-delta" />
+                            </colgroup>
+                            <thead>
+                                <tr>
+                                    <th>When</th>
+                                    <th>Movement</th>
+                                    <th class="text-right">Pool</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="movement in movements" :key="movement.id">
+                                    <td class="nowrap">{{ formatDate(movement.createdAt) || '—' }}</td>
+                                    <td class="ellipsis" :title="movement.note">
+                                        {{ movement.description }}
+                                        <span class="muted small">
+                                            {{ movement.type === 'distributed' || movement.type === 'returned' ? `${movement.quantity} booklet${movement.quantity === 1 ? '' : 's'}` : '' }}
+                                            {{ movement.performerName ? `· by ${movement.performerName}` : '' }}
+                                            {{ movement.paceRequestId ? '· stock request' : '' }}
+                                            {{ movement.note ? `· “${movement.note}”` : '' }}
+                                        </span>
+                                    </td>
+                                    <td class="mono text-right" :class="movement.poolDelta < 0 ? 'text-danger' : 'gain'">{{ movement.poolDeltaLabel }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+
             <PaceRecordsExplorer
                 title="Assignments"
                 :records="records"
@@ -177,6 +347,17 @@ onMounted(load);
                 :order="RECORD_ORDER"
                 empty-message="This PACE has not been assigned to any student yet."
                 @filtered="shownRecords = $event"
+            />
+
+            <PaceFormModal v-model="editOpen" :pace="pace" @saved="load" />
+
+            <StockActionModal
+                v-model="stockOpen"
+                :mode="stockMode"
+                :pace="pace"
+                :teachers="teachers"
+                :teacher-id="stockTeacherId"
+                @saved="onStockSaved"
             />
         </template>
     </div>
@@ -260,17 +441,18 @@ dl.info {
 }
 
 .stock-value {
+    display: inline-block;
+    min-width: 2.5ch;
+    margin-right: 6px;
     font-weight: 600;
 }
 
-.stock-badge {
-    margin-left: 6px;
+.stock-value.level-out {
+    color: var(--danger);
 }
 
-.info-item .small {
-    display: block;
-    margin-top: 4px;
-    font-size: 0.82rem;
+.stock-value.level-low {
+    color: var(--warn-text);
 }
 
 .average {
@@ -303,5 +485,92 @@ dl.info {
         padding-left: 0;
         border-left: none;
     }
+}
+
+.pair > .card {
+    min-width: 0;
+}
+
+.block {
+    padding: 0;
+    overflow: hidden;
+}
+
+.block-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+}
+
+.block .card-title {
+    margin: 0;
+}
+
+.small-note {
+    font-size: 0.85rem;
+}
+
+.state {
+    margin: 0;
+    padding: 24px 16px;
+    text-align: center;
+}
+
+.holdings,
+.ledger {
+    table-layout: fixed;
+}
+
+.col-qty {
+    width: 100px;
+}
+
+.col-set {
+    width: 60px;
+}
+
+.ledger-wrap {
+    max-height: 360px;
+    overflow-y: auto;
+}
+
+.col-when {
+    width: 120px;
+}
+
+.col-delta {
+    width: 80px;
+}
+
+.gain {
+    color: var(--success);
+}
+
+.ellipsis {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+td .small {
+    display: block;
+    font-size: 0.8rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
 }
 </style>

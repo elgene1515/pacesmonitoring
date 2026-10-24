@@ -6,8 +6,10 @@ use App\Enums\Quarter;
 use App\Models\GradeLevel;
 use App\Models\Pace;
 use App\Models\PaceAssignment;
+use App\Models\Section;
 use App\Models\Student;
 use App\Models\Subject;
+use App\Models\TeachingAssignment;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Carbon;
 
@@ -37,14 +39,25 @@ class PaceAssignmentFactory extends Factory
 
         return [
             'student_id' => Student::factory(),
-            // Default to a subject at the same grade level as the student.
+            // Default to a subject of the student's grade level: one somebody teaches
+            // to the student's section, else any of the grade level's, else a new one.
             'subject_id' => function (array $attributes) {
-                $student = Student::find($attributes['student_id']);
-                $gradeLevelId = $student ? $student->grade_level_id : GradeLevel::factory()->create()->id;
+                $sectionId = Student::query()->whereKey($attributes['student_id'])->value('section_id');
+                $gradeLevelId = Section::query()->whereKey($sectionId)->value('grade_level_id')
+                    ?? GradeLevel::factory()->create()->id;
 
-                return Subject::factory()->create(['grade_level_id' => $gradeLevelId])->id;
+                return TeachingAssignment::query()->where('section_id', $sectionId)->orderBy('id')->value('subject_id')
+                    ?? Subject::query()->where('grade_level_id', $gradeLevelId)->orderBy('sort_order')->orderBy('id')->value('id')
+                    ?? Subject::factory()->create(['grade_level_id' => $gradeLevelId])->id;
             },
-            'pace_id' => Pace::factory(),
+            // A PACE from the catalog of the student's branch.
+            'pace_id' => function (array $attributes) {
+                $branchId = GradeLevel::query()
+                    ->whereKey(Section::query()->whereKey(Student::query()->whereKey($attributes['student_id'])->value('section_id'))->value('grade_level_id'))
+                    ->value('branch_id');
+
+                return Pace::factory()->create($branchId === null ? [] : ['branch_id' => $branchId])->id;
+            },
             'school_year' => sprintf('%d-%d', $startYear, $startYear + 1),
             'quarter' => fake()->randomElement(Quarter::values()),
             'issued_date' => null,

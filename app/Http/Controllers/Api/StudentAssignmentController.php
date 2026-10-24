@@ -12,6 +12,11 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Http\Response;
 
+/**
+ * The PACE records of a student in one of the teacher's sections. Every
+ * record is visible; assigning is limited (by validation) to the subjects
+ * the teacher handles in that section.
+ */
 class StudentAssignmentController extends Controller
 {
     public function __construct(private readonly PaceAssignmentService $assignments)
@@ -36,7 +41,7 @@ class StudentAssignmentController extends Controller
      */
     public function store(StoreAssignmentRequest $request, Student $student): JsonResponse
     {
-        $created = $this->assignments->assignMany($student, $request->assignmentData());
+        $created = $this->assignments->assignMany($student, $request->assignmentData(), $request->user());
 
         return PaceAssignmentResource::collection($created)
             ->response()

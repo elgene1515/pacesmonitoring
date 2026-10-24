@@ -3,14 +3,19 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { studentService, paceService, assignmentService } from '../../services';
 import { useReferenceStore } from '../../stores/reference';
 import { useSchoolYearsStore } from '../../stores/schoolYears';
+import { useStudentChangeRequestsStore } from '../../stores/studentChangeRequests';
+import { useAuthStore } from '../../stores/auth';
 import { notify } from '../../stores/notifications';
 import { PaceAssignment, Subject } from '../../models';
 import { formatDate, formatScore, pluralize } from '../../core/format';
 import { currentSchoolYear, QUARTERS, quarterLabel } from '../../core/schoolYear';
-import StudentFormModal from '../students/StudentFormModal.vue';
+import StudentChangeModal from '../students/StudentChangeModal.vue';
+import EnrollmentHistory from '../students/EnrollmentHistory.vue';
+import StudentDetailsCard from '../students/StudentDetailsCard.vue';
 import AssignPacesModal from '../assignments/AssignPacesModal.vue';
 import AssignmentTable from '../assignments/AssignmentTable.vue';
 import EmptyState from '../ui/EmptyState.vue';
+import AppIcon from '../ui/AppIcon.vue';
 import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import LayeredRings from '../charts/LayeredRings.vue';
 import { buildRecordRings } from '../../core/recordRings';
@@ -21,6 +26,8 @@ const props = defineProps({
 
 const reference = useReferenceStore();
 const schoolYears = useSchoolYearsStore();
+const changeRequests = useStudentChangeRequestsStore();
+const auth = useAuthStore();
 
 const student = ref(null);
 const assignments = ref([]);
@@ -70,6 +77,39 @@ const gradeLevelYear = computed(() => {
 });
 
 const canAssign = computed(() => Boolean(gradeLevelYear.value) && gradeLevelYear.value.name === schoolYear.value);
+
+/**
+ * True when the signed-in teacher teaches the subject in the student's section:
+ * only then can they assign and edit its PACE records (the others are read-only).
+ */
+function teachesSubject(subject) {
+    const section = student.value?.section;
+
+    if (section && Array.isArray(section.mySubjectIds)) {
+        return section.teaches(subject.id);
+    }
+
+    return reference.teaches(student.value?.sectionId, subject.id);
+}
+
+/**
+ * The subject's own page opens for subjects the teacher teaches (in this or
+ * another section); other teachers' subjects stay plain text.
+ */
+function canOpenSubject(subject) {
+    return teachesSubject(subject) || reference.teachesSubject(subject.id);
+}
+
+/** Who teaches a subject in the student's section ("" when nobody does). */
+function teacherOf(subject) {
+    return student.value?.section?.teacherFor(subject.id)?.name ?? '';
+}
+
+/** The student's teachers, by name ("" when unknown). */
+const teacherNames = computed(() => (student.value?.teachers ?? []).map((teacher) => teacher.name).join(', '));
+
+/** A proposal of the teacher's for this student still waiting for the admin. */
+const pendingChange = computed(() => (student.value ? changeRequests.pendingFor(student.value.id) ?? null : null));
 
 /** Start on the grade level's school year (falling back to the user's current one). */
 watch(
@@ -134,9 +174,9 @@ const yearGradeLevel = computed(() => {
 const yearGradeLevelName = computed(() => yearGradeLevel.value?.name ?? '');
 
 /**
- * Subjects shown for the selected school year: the current grade level's subjects
- * when assigning is possible, otherwise the subjects that have records in that
- * year (viewing only).
+ * Subjects shown for the selected school year: the subjects this student takes
+ * (each student has their own list) when assigning is possible, otherwise the
+ * subjects that have records in that year (viewing only).
  */
 const subjects = computed(() => {
     if (!student.value) {
@@ -144,8 +184,7 @@ const subjects = computed(() => {
     }
 
     if (canAssign.value) {
-        const loaded = student.value.gradeLevel?.subjects ?? [];
-        return loaded.length ? loaded : reference.subjectsFor(student.value.gradeLevelId);
+        return student.value.subjects ?? [];
     }
 
     const seen = new Map();
@@ -273,7 +312,7 @@ function buildAutoPlan() {
     const plan = [];
     const skipped = [];
 
-    for (const subject of subjects.value) {
+    for (const subject of subjects.value.filter(teachesSubject)) {
         const subjectItems = yearAssignments.value.filter((item) => item.subjectId === subject.id);
         const first = subjectItems.filter((item) => Number(item.quarter) === 1).sort(comparePaceNumber);
 
@@ -432,8 +471,8 @@ function onRemoved(removed) {
     loadPaces();
 }
 
-function onStudentSaved() {
-    load();
+function onChangeProposed() {
+    changeRequests.fetch();
 }
 
 watch(() => props.id, load);
@@ -441,6 +480,7 @@ watch(() => props.id, load);
 onMounted(() => {
     reference.load();
     schoolYears.load();
+    changeRequests.fetch();
     load();
     loadPaces();
 });
@@ -465,13 +505,24 @@ onMounted(() => {
                 <div>
                     <h1>{{ student.displayName }}</h1>
                     <p class="muted subtitle">
-                        {{ student.gradeLevelName || reference.gradeLevelName(student.gradeLevelId) || 'No grade level' }}
+                        {{ student.classLabel || reference.gradeLevelName(student.gradeLevelId) || 'No section' }}
                         · Registered in SY {{ student.schoolYearName || gradeLevelYear?.name || '—' }}
                         · {{ pluralize(assignments.length, 'PACE record') }}
                     </p>
                 </div>
                 <div class="page-actions">
-                    <button type="button" class="btn btn-secondary" @click="editOpen = true">Edit</button>
+                    <RouterLink v-if="pendingChange" :to="{ name: 'student-change-requests' }" class="muted pending-change">
+                        Changes proposed · waiting for your admin
+                    </RouterLink>
+                    <button
+                        type="button"
+                        class="btn btn-secondary"
+                        :disabled="!auth.canWrite || Boolean(pendingChange)"
+                        :title="pendingChange ? 'Your earlier proposal is still waiting for your admin' : ''"
+                        @click="editOpen = true"
+                    >
+                        Propose changes
+                    </button>
                 </div>
             </div>
 
@@ -480,6 +531,10 @@ onMounted(() => {
             <section class="card info-card">
                 <h2 class="card-title">Student information</h2>
                 <dl class="info">
+                    <div class="info-item">
+                        <dt>Student ID number</dt>
+                        <dd class="mono">{{ student.studentNumber || '—' }}</dd>
+                    </div>
                     <div class="info-item">
                         <dt>Full name</dt>
                         <dd>{{ student.fullName }}</dd>
@@ -515,6 +570,23 @@ onMounted(() => {
                     <div class="info-item">
                         <dt>Grade level</dt>
                         <dd>{{ student.gradeLevelName || reference.gradeLevelName(student.gradeLevelId) || '—' }}</dd>
+                    </div>
+                    <div class="info-item">
+                        <dt>Section</dt>
+                        <dd>
+                            <RouterLink v-if="student.sectionId" :to="{ name: 'section-detail', params: { id: student.sectionId } }">
+                                {{ student.sectionName || 'Section' }}
+                            </RouterLink>
+                            <span v-else>—</span>
+                        </dd>
+                    </div>
+                    <div class="info-item">
+                        <dt>Teachers</dt>
+                        <dd>{{ teacherNames || '—' }}</dd>
+                    </div>
+                    <div class="info-item info-wide">
+                        <dt>Subjects taken</dt>
+                        <dd>{{ student.subjectNames || '—' }}</dd>
                     </div>
                     <div class="info-item">
                         <dt>School year</dt>
@@ -564,6 +636,10 @@ onMounted(() => {
                 </p>
             </section>
             </div>
+
+            <StudentDetailsCard :student="student" />
+
+            <EnrollmentHistory :enrollments="student.enrollments" />
 
             <section class="card projection">
                 <h2 class="card-title">PACE Projection · SY {{ schoolYear }}</h2>
@@ -658,7 +734,7 @@ onMounted(() => {
                 <p v-if="schoolYears.loaded && !canAssign" class="notice">
                     <template v-if="!gradeLevelYear">
                         This student's grade level is not registered under a school year, so PACEs cannot be assigned.
-                        <RouterLink :to="{ name: 'grade-levels' }">Manage grade levels</RouterLink>
+                        Ask your school admin to fix the grade level.
                     </template>
                     <template v-else>
                         Viewing SY {{ schoolYear }}<template v-if="yearGradeLevelName"> · {{ student.firstName }} was in {{ yearGradeLevelName }}</template>.
@@ -704,18 +780,18 @@ onMounted(() => {
                     :message="`No record. ${student.firstName} has no PACE records in SY ${schoolYear}.`"
                 />
 
-                <EmptyState v-else-if="subjects.length === 0" message="This grade level has no subjects yet, so no PACEs can be assigned.">
-                    <template #action>
-                        <RouterLink :to="{ name: 'grade-levels' }" class="btn btn-secondary btn-sm">Add subjects</RouterLink>
-                    </template>
-                </EmptyState>
+                <EmptyState
+                    v-else-if="subjects.length === 0"
+                    message="This student takes no subjects yet, so no PACEs can be assigned. Your school admin chooses the subjects."
+                />
 
                 <div v-else class="subjects">
                     <section v-for="subject in subjects" :key="subject.id" class="card subject">
                         <div class="subject-header">
                             <div>
                                 <h3>
-                                    {{ subject.name }}
+                                    <RouterLink v-if="canOpenSubject(subject)" :to="{ name: 'subject-detail', params: { id: subject.id } }" :title="`View ${subject.name}`">{{ subject.name }}</RouterLink>
+                                    <template v-else>{{ subject.name }}</template>
                                     <span v-if="viewingHistory && yearGradeLevelName" class="muted subject-level">{{ yearGradeLevelName }}</span>
                                 </h3>
                                 <p class="muted subject-meta">
@@ -733,21 +809,33 @@ onMounted(() => {
                                 </p>
                             </div>
                             <button
-                                v-if="!viewingHistory"
+                                v-if="!viewingHistory && teachesSubject(subject)"
                                 type="button"
                                 class="btn btn-secondary btn-sm"
-                                :disabled="!canAssign"
+                                :disabled="!canAssign || !auth.canWrite"
                                 :title="canAssign ? '' : 'Select a registered school year first'"
                                 @click="openAssign(subject)"
                             >
                                 Assign PACEs
                             </button>
+                            <span v-else-if="!viewingHistory" class="muted taught-by">
+                                {{ teacherOf(subject) ? `Taught by ${teacherOf(subject)}` : 'Nobody teaches this subject yet' }}
+                            </span>
+                            <RouterLink
+                                v-if="canOpenSubject(subject)"
+                                :to="{ name: 'subject-detail', params: { id: subject.id } }"
+                                class="btn btn-link btn-sm btn-icon subject-view"
+                                :title="`View ${subject.name}`"
+                                :aria-label="`View ${subject.name}`"
+                            >
+                                <AppIcon name="eye" />
+                            </RouterLink>
                         </div>
 
                         <AssignmentTable
                             :assignments="forSubject(subject)"
                             :paces="paces"
-                            :readonly="viewingHistory"
+                            :readonly="viewingHistory || !teachesSubject(subject)"
                             empty-message="No PACEs assigned"
                             @updated="onUpdated"
                             @removed="onRemoved"
@@ -756,7 +844,7 @@ onMounted(() => {
                 </div>
             </section>
 
-            <StudentFormModal v-model="editOpen" :student="student" @saved="onStudentSaved" />
+            <StudentChangeModal v-model="editOpen" :student="student" @saved="onChangeProposed" />
 
             <AssignPacesModal
                 v-model="assignOpen"
@@ -907,6 +995,10 @@ dl.info {
 
 .info-item dd {
     margin: 0;
+}
+
+.info-wide {
+    grid-column: 1 / -1;
 }
 
 .projection-summary {
@@ -1136,9 +1228,28 @@ dl.info {
     border-bottom: 1px solid var(--border);
 }
 
+/* The view icon sits after the Assign button / "Taught by" note. */
+.subject-header > div:first-child {
+    margin-right: auto;
+}
+
+.subject-view {
+    flex: 0 0 auto;
+}
+
 .subject-meta {
     margin: 2px 0 0;
     font-size: 0.85rem;
+}
+
+.taught-by {
+    font-size: 0.85rem;
+    text-align: right;
+}
+
+.pending-change {
+    font-size: 0.85rem;
+    align-self: center;
 }
 
 .subject-level {

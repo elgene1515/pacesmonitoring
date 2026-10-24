@@ -2,13 +2,17 @@
 
 namespace Tests\Feature;
 
+use App\Models\Branch;
 use App\Models\GradeLevel;
 use App\Models\Organization;
 use App\Models\Pace;
 use App\Models\PaceAssignment;
+use App\Models\PaceStockHolding;
 use App\Models\SchoolYear;
+use App\Models\Section;
 use App\Models\Student;
 use App\Models\Subject;
+use App\Models\TeachingAssignment;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -20,12 +24,19 @@ use Tests\TestCase;
  * EnsureFrontendRequestsAreStateful applies the session middleware, exactly
  * like the SPA's browser requests do.
  *
- * Every record belongs to a teacher, and every teacher belongs to an
- * organization. `User::factory()->create()` makes a teacher in a fresh
- * organization of their own (main branch, active subscription), so two
- * factory users are strangers unless placed in the same organization. School
- * years belong to the organization; the record helpers below create data for
- * the signed-in user by default (or for an explicit owner).
+ * The domain: an organization has branches; a branch has grade levels (per
+ * school year) with subjects and sections; students are enrolled in a
+ * section; a teaching assignment gives one teacher one subject in one
+ * section; the PACE catalog and the stock pool are per branch, and each
+ * teacher holds their own booklets.
+ *
+ * `User::factory()->create()` makes a teacher in a fresh organization of
+ * their own (main branch, active subscription), so two factory users are
+ * strangers unless placed in the same organization. The record helpers
+ * below create data "for" a user: a grade level for a teacher comes with a
+ * section the teacher teaches every subject in, so a teacher's students,
+ * subjects and records are visible to them the way an admin would have set
+ * them up.
  */
 abstract class ApiTestCase extends TestCase
 {
@@ -127,11 +138,11 @@ abstract class ApiTestCase extends TestCase
     }
 
     /**
-     * A teacher of the given organization.
+     * A teacher of the given organization (its main branch unless a branch is given).
      */
-    protected function teacher(Organization $organization, array $attributes = []): User
+    protected function teacher(Organization $organization, array $attributes = [], ?Branch $branch = null): User
     {
-        return User::factory()->inOrganization($organization)->create($attributes);
+        return User::factory()->inOrganization($organization, $branch)->create($attributes);
     }
 
     /**
@@ -140,6 +151,14 @@ abstract class ApiTestCase extends TestCase
     protected function platformOwner(array $attributes = []): User
     {
         return User::factory()->owner()->create($attributes);
+    }
+
+    /**
+     * The branch a member works in.
+     */
+    protected function branchOf(User $member): Branch
+    {
+        return Branch::query()->findOrFail($member->branch_id);
     }
 
     /**
@@ -172,9 +191,11 @@ abstract class ApiTestCase extends TestCase
     }
 
     /**
-     * A grade level (with the default subjects) owned by the given user, created on
-     * first use under the given school year (default: the organization's default
-     * school year, registering "2026-2027" when it has none yet).
+     * A grade level (with the default subjects) in the given user's branch,
+     * created on first use under the given school year (default: the
+     * organization's default school year, registering "2026-2027" when it
+     * has none yet). A teacher gets a section of it in which they teach
+     * every subject (see section()).
      *
      * @param  array<int, string>  $subjects
      */
@@ -188,31 +209,91 @@ abstract class ApiTestCase extends TestCase
         $schoolYear ??= SchoolYear::query()->forOrganization($owner->organization_id)->where('is_current', true)->first()
             ?? $this->schoolYear('2026-2027', $owner, ['is_current' => true]);
 
-        $existing = GradeLevel::query()
-            ->ownedBy($owner)
+        $gradeLevel = GradeLevel::query()
+            ->forBranch($owner->branch_id)
             ->where('school_year_id', $schoolYear->id)
             ->where('name', $name)
             ->first();
 
-        if ($existing !== null) {
-            return $existing;
-        }
-
-        $gradeLevel = GradeLevel::factory()->for($owner)->create([
-            'school_year_id' => $schoolYear->id,
-            'name' => $name,
-            'sort_order' => GradeLevel::query()->ownedBy($owner)->where('school_year_id', $schoolYear->id)->count(),
-        ]);
-
-        foreach ($subjects as $order => $subjectName) {
-            Subject::factory()->create([
-                'grade_level_id' => $gradeLevel->id,
-                'name' => $subjectName,
-                'sort_order' => $order,
+        if ($gradeLevel === null) {
+            $gradeLevel = GradeLevel::factory()->create([
+                'branch_id' => $owner->branch_id,
+                'school_year_id' => $schoolYear->id,
+                'created_by' => $owner->id,
+                'name' => $name,
+                'sort_order' => GradeLevel::query()->forBranch($owner->branch_id)->where('school_year_id', $schoolYear->id)->count(),
             ]);
+
+            foreach ($subjects as $order => $subjectName) {
+                Subject::factory()->create([
+                    'grade_level_id' => $gradeLevel->id,
+                    'name' => $subjectName,
+                    'sort_order' => $order,
+                ]);
+            }
         }
+
+        $this->section($gradeLevel, $owner);
 
         return $gradeLevel;
+    }
+
+    /**
+     * The section of a grade level the given user works with, created on
+     * first use. For a teacher: a section they teach in (taking over a
+     * section nobody teaches in yet, else a new one), with every subject of
+     * the grade level assigned to them. For an admin: the first section.
+     */
+    protected function section(GradeLevel $gradeLevel, ?User $owner = null, ?string $name = null): Section
+    {
+        $owner ??= $this->owner();
+
+        if (! $owner->isTeacher()) {
+            return $gradeLevel->sections()->first()
+                ?? Section::factory()->create(['grade_level_id' => $gradeLevel->id, 'name' => $name ?? 'Section 1', 'sort_order' => 0]);
+        }
+
+        $section = $gradeLevel->sections()->ownedBy($owner)->first();
+
+        if ($section !== null) {
+            return $section;
+        }
+
+        $section = $gradeLevel->sections()->whereDoesntHave('teachingAssignments')->first()
+            ?? Section::factory()->create([
+                'grade_level_id' => $gradeLevel->id,
+                'name' => $name ?? 'Section '.($gradeLevel->sections()->count() + 1),
+                'sort_order' => $gradeLevel->sections()->count(),
+            ]);
+
+        foreach ($gradeLevel->subjects as $subject) {
+            $this->assign($owner, $section, $subject);
+        }
+
+        return $section;
+    }
+
+    /**
+     * A new, empty section of a grade level (nobody teaches in it yet).
+     */
+    protected function emptySection(GradeLevel $gradeLevel, ?string $name = null): Section
+    {
+        return Section::factory()->create([
+            'grade_level_id' => $gradeLevel->id,
+            'name' => $name ?? 'Section '.($gradeLevel->sections()->count() + 1),
+            'sort_order' => $gradeLevel->sections()->count(),
+        ]);
+    }
+
+    /**
+     * Give a teacher a subject in a section (replacing whoever had it).
+     */
+    protected function assign(User $teacher, Section $section, Subject $subject): TeachingAssignment
+    {
+        return TeachingAssignment::query()->updateOrCreate(
+            ['section_id' => $section->id, 'subject_id' => $subject->id],
+            ['teacher_id' => $teacher->id]
+        );
     }
 
     /**
@@ -224,8 +305,10 @@ abstract class ApiTestCase extends TestCase
     }
 
     /**
-     * A student registered by the given user (enrolled in their "Grade 1" and
-     * filed under the current school year, when there is one, unless specified).
+     * A student registered by the given user, enrolled in their section of
+     * "Grade 1" unless a `section_id` (or a `grade_level_id`, whose section
+     * for the user is used) is given, and filed under the section's grade
+     * level's school year unless specified.
      *
      * @param  array<string, mixed>  $attributes
      */
@@ -235,21 +318,26 @@ abstract class ApiTestCase extends TestCase
 
         $attributes['created_by'] = $owner->id;
 
-        if (! isset($attributes['grade_level_id'])) {
-            $attributes['grade_level_id'] = $this->gradeLevel('Grade 1', $owner)->id;
+        if (! isset($attributes['section_id'])) {
+            $gradeLevel = isset($attributes['grade_level_id'])
+                ? GradeLevel::query()->findOrFail((int) $attributes['grade_level_id'])
+                : $this->gradeLevel('Grade 1', $owner);
+
+            $attributes['section_id'] = $this->section($gradeLevel, $owner)->id;
         }
 
-        // A student's school year is the school year of their grade level.
+        unset($attributes['grade_level_id']);
+
         if (! array_key_exists('school_year_id', $attributes)) {
-            $fromGradeLevel = GradeLevel::query()->whereKey($attributes['grade_level_id'])->value('school_year_id');
-            $attributes['school_year_id'] = $fromGradeLevel === null ? $this->currentSchoolYearId($owner) : (int) $fromGradeLevel;
+            $attributes['school_year_id'] = Section::query()->findOrFail($attributes['section_id'])->gradeLevel->school_year_id;
         }
 
         return Student::factory()->create($attributes);
     }
 
     /**
-     * A PACE registered by the given user.
+     * A PACE in the given user's branch catalog, registered by them. A
+     * `my_stock` attribute gives that user (a teacher) that many booklets.
      *
      * @param  array<string, mixed>  $attributes
      */
@@ -257,11 +345,32 @@ abstract class ApiTestCase extends TestCase
     {
         $owner ??= $this->owner();
 
-        return Pace::factory()->create($attributes + ['created_by' => $owner->id]);
+        $myStock = $attributes['my_stock'] ?? null;
+        unset($attributes['my_stock']);
+
+        $pace = Pace::factory()->create($attributes + ['branch_id' => $owner->branch_id, 'created_by' => $owner->id]);
+
+        if ($myStock !== null) {
+            $this->holding($pace, $owner, (int) $myStock);
+        }
+
+        return $pace;
     }
 
     /**
-     * An assignment whose student and PACE both belong to the given user.
+     * Set how many booklets of a PACE a teacher has (no ledger entry).
+     */
+    protected function holding(Pace $pace, User $teacher, int $quantity): PaceStockHolding
+    {
+        return PaceStockHolding::query()->updateOrCreate(
+            ['pace_id' => $pace->id, 'user_id' => $teacher->id],
+            ['quantity' => $quantity]
+        );
+    }
+
+    /**
+     * A PACE record the given user is in charge of: their student, a PACE of
+     * their branch, under a subject they teach in the student's section.
      *
      * @param  array<string, mixed>  $attributes
      */
@@ -271,6 +380,18 @@ abstract class ApiTestCase extends TestCase
 
         if (! isset($attributes['student_id'])) {
             $attributes['student_id'] = $this->student([], $owner)->id;
+        }
+
+        if (! isset($attributes['subject_id'])) {
+            $student = Student::query()->findOrFail($attributes['student_id']);
+
+            $attributes['subject_id'] = TeachingAssignment::query()
+                ->forTeacher($owner)
+                ->where('section_id', $student->section_id)
+                ->join('subjects', 'subjects.id', '=', 'teaching_assignments.subject_id')
+                ->orderBy('subjects.sort_order')
+                ->value('teaching_assignments.subject_id')
+                ?? $student->section->subjectsQuery()->value('id');
         }
 
         if (! isset($attributes['pace_id'])) {

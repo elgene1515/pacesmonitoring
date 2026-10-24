@@ -7,7 +7,7 @@
 defineProps({
     /**
      * 'eye' | 'pencil' | 'trash' | 'star' | 'star-filled' | 'retake' | 'plus' | 'minus' | 'box'
-     * | 'chevron-down' | 'gear' | 'logout' | 'sun' | 'moon' | 'monitor' | 'check' | 'copy'
+     * | 'chevron-down' | 'gear' | 'logout' | 'sun' | 'moon' | 'monitor' | 'check' | 'close' | 'copy'
      */
     name: { type: String, required: true },
 });
@@ -73,6 +73,9 @@ defineProps({
         </template>
         <template v-else-if="name === 'check'">
             <path d="M3 8.5l3.2 3L13 4.5" />
+        </template>
+        <template v-else-if="name === 'close'">
+            <path d="M4 4l8 8M12 4l-8 8" />
         </template>
         <template v-else-if="name === 'copy'">
             <rect x="5.5" y="5.5" width="8" height="8" rx="1.3" />

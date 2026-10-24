@@ -28,9 +28,10 @@ class DashboardController extends Controller
      * a per-school-year breakdown, the teacher activity ranking and the
      * hardest PACEs.
      *
-     * `?branch_id=`, `?teacher_id=`, `?school_year_id=`, `?grade_level_id=` and
-     * `?subject_id=` and `?pace_id=` narrow the figures (the recent lists and the totals never
-     * narrow). The owner may add `?organization_id=`.
+     * `?branch_id=`, `?teacher_id=` (the sections that teacher teaches in and
+     * the records of their subjects), `?school_year_id=`, `?grade_level_id=`,
+     * `?section_id=`, `?subject_id=` and `?pace_id=` narrow the figures (the
+     * totals never narrow). The owner may add `?organization_id=`.
      */
     public function summary(Request $request): JsonResponse
     {
@@ -55,13 +56,14 @@ class DashboardController extends Controller
                 Rule::exists('school_years', 'id')->when($organizationId !== null, fn ($rule) => $rule->where('organization_id', $organizationId)),
             ],
             'grade_level_id' => ['nullable', 'integer', Rule::exists('grade_levels', 'id')],
+            'section_id' => ['nullable', 'integer', Rule::exists('sections', 'id')],
             'subject_id' => ['nullable', 'integer', Rule::exists('subjects', 'id')],
             'pace_id' => ['nullable', 'integer', Rule::exists('paces', 'id')],
         ]);
 
         $summary = $this->dashboard->summary($filters, $organizationId);
         $scopeId = $summary['organization_id'];
-        // The branch / teacher filters narrow the rankings and recent lists as well.
+        // The recent registrations follow the branch / teacher scope (the rest of the figures follow every filter).
         $scope = $summary['scope'];
 
         $schoolYears = $this->dashboard->schoolYears($scopeId)->map(fn ($year) => [
@@ -76,17 +78,6 @@ class DashboardController extends Controller
             'grade_levels_count' => $year->grade_levels_count,
         ]);
 
-        $teacherActivity = $this->dashboard->teacherActivity($scope)->map(fn ($teacher) => [
-            'id' => $teacher->id,
-            'name' => $teacher->name,
-            'branch_name' => $teacher->branch?->name ?? '',
-            'students_count' => $teacher->students_count,
-            'assignments_count' => $teacher->assignments_count,
-            'tested_count' => $teacher->tested_count,
-            'issued_count' => $teacher->issued_count,
-            'assigned_count' => $teacher->assignments_count - $teacher->tested_count - $teacher->issued_count,
-        ]);
-
         return response()->json([
             'data' => [
                 'organization_id' => $summary['organization_id'],
@@ -95,6 +86,7 @@ class DashboardController extends Controller
                 'school_year' => $summary['school_year'] ? (new SchoolYearResource($summary['school_year']))->resolve() : null,
                 'teachers' => $summary['teachers'],
                 'grade_levels' => $summary['grade_levels'],
+                'sections' => $summary['sections'],
                 'students' => $summary['students'],
                 'paces' => $summary['paces'],
                 'assignments' => $summary['assignments'],
@@ -113,10 +105,10 @@ class DashboardController extends Controller
                 'score_distribution' => $summary['score_distribution'],
                 'hardest_paces' => $summary['hardest_paces'],
                 'totals' => $summary['totals'],
-                'recent_students' => StudentResource::collection($this->dashboard->recentStudents($scope))->resolve(),
+                'recent_students' => StudentResource::collection($summary['recent_students'])->resolve(),
                 'recent_users' => UserResource::collection($this->dashboard->recentUsers($scope))->resolve(),
                 'school_years' => $schoolYears,
-                'teacher_activity' => $teacherActivity,
+                'teacher_activity' => $summary['teacher_activity'],
             ],
         ]);
     }

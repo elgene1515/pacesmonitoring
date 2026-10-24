@@ -3,11 +3,19 @@
 namespace App\Http\Requests\Student;
 
 use App\Enums\Sex;
-use App\Models\GradeLevel;
+use App\Models\Section;
+use App\Models\TeachingAssignment;
+use App\Support\StudentDetails;
+use Closure;
 use Illuminate\Contracts\Validation\Validator;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
+/**
+ * Enroll a student in a section: one the teacher teaches in, or any section
+ * of the admin's organization (platform staff may enroll anywhere).
+ */
 class StoreStudentRequest extends FormRequest
 {
     /**
@@ -25,6 +33,80 @@ class StoreStudentRequest extends FormRequest
      */
     public function rules(): array
     {
+        $rules = $this->detailRules() + StudentDetails::rules() + [
+            'section_id' => ['required', 'integer', $this->sectionRule()],
+            // The subjects the student takes (default: every subject of the section's grade level).
+            'subject_ids' => ['sometimes', 'array', 'max:100'],
+            'subject_ids.*' => ['integer', 'distinct', 'exists:subjects,id'],
+        ];
+
+        // The ID number is unique within the school the section belongs to.
+        $rules['student_number'][] = StudentDetails::uniqueNumber(
+            Section::query()->find((int) $this->input('section_id')),
+            $this->ignoredStudentId()
+        );
+
+        return $rules;
+    }
+
+    /**
+     * The student being edited (none when enrolling).
+     */
+    protected function ignoredStudentId(): ?int
+    {
+        return null;
+    }
+
+    /**
+     * The chosen subjects must be ones the section offers, and a
+     * teacher has to keep at least one they teach there (otherwise the
+     * student would vanish from their lists).
+     *
+     * @return array<int, \Closure>
+     */
+    public function after(): array
+    {
+        return [function (Validator $validator): void {
+            $ids = $this->input('subject_ids');
+
+            if ($validator->errors()->isNotEmpty() || ! is_array($ids)) {
+                return;
+            }
+
+            $ids = array_map('intval', $ids);
+            $section = Section::query()->with('subjects:subjects.id')->find((int) $this->input('section_id'));
+            $allowed = $section?->subjects->pluck('id')->map(fn ($id) => (int) $id)->all() ?? [];
+
+            if (array_diff($ids, $allowed) !== []) {
+                $validator->errors()->add('subject_ids', 'Pick subjects the section offers only.');
+
+                return;
+            }
+
+            $user = $this->user();
+
+            if ($user !== null && $user->isTeacher() && $section !== null) {
+                $taught = TeachingAssignment::query()
+                    ->where('section_id', $section->id)
+                    ->where('teacher_id', $user->id)
+                    ->pluck('subject_id')
+                    ->map(fn ($id) => (int) $id)
+                    ->all();
+
+                if (array_intersect($ids, $taught) === []) {
+                    $validator->errors()->add('subject_ids', 'Include at least one subject you teach in that section.');
+                }
+            }
+        }];
+    }
+
+    /**
+     * The rules for a student's own details.
+     *
+     * @return array<string, mixed>
+     */
+    protected function detailRules(): array
+    {
         return [
             'first_name' => ['required', 'string', 'max:100'],
             'middle_name' => ['nullable', 'string', 'max:100'],
@@ -33,29 +115,6 @@ class StoreStudentRequest extends FormRequest
             'birth_date' => ['required', 'date_format:Y-m-d', 'before_or_equal:today'],
             'age' => ['required', 'integer', 'min:0', 'max:120'],
             'sex' => ['required', Rule::enum(Sex::class)],
-            'grade_level_id' => [
-                'required',
-                'integer',
-                Rule::exists('grade_levels', 'id')->where('user_id', $this->user()?->id),
-            ],
-            'school_year_id' => [
-                'nullable',
-                'integer',
-                Rule::exists('school_years', 'id')->where('organization_id', $this->user()?->organization_id),
-            ],
-        ];
-    }
-
-    /**
-     * Custom validation messages.
-     *
-     * @return array<string, string>
-     */
-    public function messages(): array
-    {
-        return [
-            'grade_level_id.exists' => 'The selected grade level is invalid.',
-            'school_year_id.exists' => 'The selected school year is invalid.',
         ];
     }
 
@@ -67,47 +126,27 @@ class StoreStudentRequest extends FormRequest
     public function attributes(): array
     {
         return [
-            'grade_level_id' => 'grade level',
+            'section_id' => 'section',
             'birth_date' => 'birth date',
-        ];
+        ] + StudentDetails::attributes();
     }
 
     /**
-     * A student's school year is the school year of their grade level; an
-     * explicit school year that disagrees with the grade level is rejected.
+     * @return array<string, string>
      */
-    public function withValidator(Validator $validator): void
+    public function messages(): array
     {
-        $validator->after(function (Validator $validator): void {
-            if ($validator->errors()->hasAny(['grade_level_id', 'school_year_id'])) {
-                return;
-            }
-
-            $schoolYearId = $this->input('school_year_id');
-
-            if ($schoolYearId === null || $schoolYearId === '') {
-                return;
-            }
-
-            $gradeLevel = GradeLevel::query()->find((int) $this->input('grade_level_id'));
-
-            if ($gradeLevel !== null && (int) $gradeLevel->school_year_id !== (int) $schoolYearId) {
-                $validator->errors()->add(
-                    'school_year_id',
-                    "The school year must match the grade level's school year."
-                );
-            }
-        });
+        return StudentDetails::messages();
     }
 
     /**
-     * The validated attributes that may be persisted on a student.
+     * The student's own details (everything but the section).
      *
      * @return array<string, mixed>
      */
     public function studentData(): array
     {
-        return $this->safe()->only([
+        return StudentDetails::clean($this->safe()->only([
             'first_name',
             'middle_name',
             'last_name',
@@ -115,8 +154,57 @@ class StoreStudentRequest extends FormRequest
             'birth_date',
             'age',
             'sex',
-            'grade_level_id',
-            'school_year_id',
-        ]);
+            ...StudentDetails::FIELDS,
+        ]));
+    }
+
+    /**
+     * The subjects the student takes, or null to take every subject the section offers.
+     *
+     * @return array<int, int>|null
+     */
+    public function subjectIds(): ?array
+    {
+        $ids = $this->validated('subject_ids');
+
+        return is_array($ids) ? array_values(array_unique(array_map('intval', $ids))) : null;
+    }
+
+    /**
+     * The section to enroll in (validated to be one the user may use).
+     */
+    public function section(): Section
+    {
+        return Section::query()->findOrFail((int) $this->validated('section_id'));
+    }
+
+    /**
+     * The sections the user may enroll a student in.
+     */
+    protected function sectionRule(): Closure
+    {
+        return function (string $attribute, mixed $value, Closure $fail): void {
+            $user = $this->user();
+
+            $query = Section::query()->whereKey((int) $value);
+
+            if ($user === null) {
+                $fail('The selected section is invalid.');
+
+                return;
+            }
+
+            if ($user->isTeacher()) {
+                $query->ownedBy($user);
+            } elseif (! $user->isPlatform()) {
+                $query->forOrganization($user->organization_id);
+            }
+
+            if (! $query->exists()) {
+                $fail($user->isTeacher()
+                    ? 'You can only enroll students in a section you teach.'
+                    : 'The selected section is invalid.');
+            }
+        };
     }
 }

@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\JoinRequestStatus;
+use App\Enums\Role;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -24,6 +25,7 @@ class JoinRequest extends Model
         'user_id',
         'organization_id',
         'branch_id',
+        'requested_role',
         'status',
         'message',
         'decline_reason',
@@ -48,6 +50,19 @@ class JoinRequest extends Model
     public function scopePending(Builder $query): Builder
     {
         return $query->where('status', JoinRequestStatus::Pending->value);
+    }
+
+    /**
+     * The role the person asked for (teacher unless they asked to join as an administrator).
+     */
+    public function requestedRole(): Role
+    {
+        return Role::tryFrom((string) $this->requested_role) ?? Role::Teacher;
+    }
+
+    public function wantsAdmin(): bool
+    {
+        return $this->requestedRole() === Role::Admin;
     }
 
     public function isPending(): bool

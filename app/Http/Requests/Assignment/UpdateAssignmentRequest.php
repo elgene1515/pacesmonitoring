@@ -5,7 +5,8 @@ namespace App\Http\Requests\Assignment;
 use App\Enums\Quarter;
 use App\Models\PaceAssignment;
 use App\Rules\AssignmentSchoolYear;
-use App\Rules\SubjectBelongsToGradeLevel;
+use App\Rules\StudentTakesSubject;
+use App\Rules\TeacherTeachesSubjectInSection;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Carbon;
@@ -28,21 +29,22 @@ class UpdateAssignmentRequest extends FormRequest
      */
     public function rules(): array
     {
-        $gradeLevelId = $this->assignment()?->student?->grade_level_id;
+        $sectionId = $this->assignment()?->student?->section_id;
 
         return [
             'pace_id' => [
                 'sometimes',
                 'required',
                 'integer',
-                Rule::exists('paces', 'id')->where('created_by', $this->user()?->id),
+                Rule::exists('paces', 'id')->where('branch_id', $this->user()?->branch_id),
             ],
             'subject_id' => [
                 'sometimes',
                 'required',
                 'integer',
                 Rule::exists('subjects', 'id'),
-                new SubjectBelongsToGradeLevel($gradeLevelId !== null ? (int) $gradeLevelId : null),
+                new TeacherTeachesSubjectInSection($sectionId !== null ? (int) $sectionId : null, $this->user()?->id),
+                new StudentTakesSubject($this->assignment()?->student_id !== null ? (int) $this->assignment()->student_id : null),
             ],
             'quarter' => ['sometimes', 'required', 'integer', Rule::in(Quarter::values())],
             'school_year' => [
@@ -84,6 +86,7 @@ class UpdateAssignmentRequest extends FormRequest
     public function messages(): array
     {
         return [
+            'pace_id.exists' => "The selected PACE is not in your branch's catalog.",
             'school_year.regex' => 'The school year must be in the format YYYY-YYYY.',
             'school_year.exists' => "The school year is not one of your organization's school years.",
         ];

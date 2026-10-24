@@ -2,57 +2,63 @@
 
 namespace App\Services\Admin;
 
+use App\Models\Branch;
 use App\Models\Pace;
+use App\Services\PaceService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 
+/**
+ * The admin side of the PACE catalogs: every branch's catalog in scope with
+ * the pool and each teacher's booklets.
+ */
 class AdminPaceService
 {
+    public function __construct(private readonly PaceService $paces)
+    {
+    }
+
     /**
-     * Every PACE of the teachers in scope, with assignment counts and stock.
-     *
-     * Supported filters: search (matches number or name), teacher_id, branch_id.
+     * The catalogs in scope with assignment counts, the pool, every holding
+     * and the total held. Filters: search (number or name), branch_id,
+     * teacher_id (PACEs that teacher has booklets of).
      *
      * @param  array<string, mixed>  $filters
      * @return \Illuminate\Database\Eloquent\Collection<int, \App\Models\Pace>
      */
     public function list(array $filters = [], ?int $organizationId = null): Collection
     {
-        $query = TeacherScope::fromFilters($filters, $organizationId)
-            ->applyOwner(Pace::query(), 'paces.created_by')
-            ->withCount(Pace::counts())
-            ->orderByRaw('LENGTH(number), number');
+        $scope = TeacherScope::fromFilters($filters, $organizationId);
 
-        $search = trim((string) ($filters['search'] ?? ''));
-
-        if ($search !== '') {
-            $like = '%'.addcslashes($search, '\\%_').'%';
-
-            $query->where(function (Builder $inner) use ($like): void {
-                $inner->where('number', 'like', $like)
-                    ->orWhere('name', 'like', $like);
-            });
-        }
-
-        return $query->get();
+        return $this->paces->catalogQuery($scope->heldBy($scope->applyPaces(Pace::query())), $filters)
+            ->with(['branch.organization', 'holdings.teacher'])
+            ->withSum('holdings as holdings_total', 'quantity')
+            ->get();
     }
 
     /**
-     * A PACE of a teacher in scope (with the teacher and their branch) and every
-     * assignment (student and subject included), newest school year and quarter
-     * first. 404 outside the scope.
+     * A PACE in scope; 404 outside it.
+     */
+    public function find(int $id, ?int $organizationId = null): Pace
+    {
+        return Pace::query()
+            ->when($organizationId !== null, fn (Builder $query) => $query->forOrganization($organizationId))
+            ->findOrFail($id);
+    }
+
+    public function findBranch(int $id, ?int $organizationId = null): Branch
+    {
+        return Branch::query()
+            ->when($organizationId !== null, fn (Builder $query) => $query->where('organization_id', $organizationId))
+            ->findOrFail($id);
+    }
+
+    /**
+     * A PACE in scope with the pool, every holding, and every assignment
+     * (student and subject included). 404 outside the scope.
      */
     public function detail(int $paceId, ?int $organizationId = null): Pace
     {
-        return TeacherScope::forOrganization($organizationId)
-            ->applyOwner(Pace::query(), 'paces.created_by')
-            ->withCount(Pace::counts())
-            ->with(['creator.branch', 'assignments' => function ($query): void {
-                $query->with(['student.gradeLevel', 'subject', 'pace'])
-                    ->orderByDesc('school_year')
-                    ->orderBy('quarter')
-                    ->orderByDesc('id');
-            }])
-            ->findOrFail($paceId);
+        return $this->paces->detail($this->find($paceId, $organizationId));
     }
 }

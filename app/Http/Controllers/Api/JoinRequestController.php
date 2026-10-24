@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\Role;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\JoinRequest\StoreJoinRequestRequest;
 use App\Http\Resources\JoinRequestResource;
@@ -15,7 +16,8 @@ use Illuminate\Http\Response;
 use Illuminate\Validation\ValidationException;
 
 /**
- * The teacher's side of joining an organization.
+ * The joining side: a teacher (or an admin-type account that wants to join a
+ * school already registered, as an administrator) asks, waits, or withdraws.
  */
 class JoinRequestController extends Controller
 {
@@ -41,11 +43,15 @@ class JoinRequestController extends Controller
 
         $branch = Branch::query()->findOrFail((int) $request->validated('branch_id'));
 
+        // Only an admin-type account may ask for the administrator role; teachers join as teachers.
+        $wanted = $request->user()->isAdmin() && $request->validated('role') === Role::Admin->value ? Role::Admin : Role::Teacher;
+
         $joinRequest = $this->joinRequests->submit(
             $request->user(),
             $organization,
             $branch,
-            $request->validated('message')
+            $request->validated('message'),
+            $wanted
         );
 
         return (new JoinRequestResource($joinRequest))

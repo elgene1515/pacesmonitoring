@@ -17,8 +17,12 @@ class StudentResource extends JsonResource
      */
     public function toArray($request): array
     {
+        $section = $this->relationLoaded('section') ? $this->section : null;
+        $gradeLevel = $section !== null && $section->relationLoaded('gradeLevel') ? $section->gradeLevel : null;
+
         return [
             'id' => $this->id,
+            'student_number' => $this->student_number,
             'first_name' => $this->first_name,
             'middle_name' => $this->middle_name,
             'last_name' => $this->last_name,
@@ -27,10 +31,24 @@ class StudentResource extends JsonResource
             'birth_date' => $this->birth_date?->format('Y-m-d'),
             'age' => $this->age,
             'sex' => $this->sex instanceof Sex ? $this->sex->value : $this->sex,
-            'grade_level_id' => $this->grade_level_id,
-            'grade_level' => new GradeLevelResource($this->whenLoaded('gradeLevel')),
+            // Contact, emergency and health details (all optional).
+            'email' => $this->email,
+            'mobile' => $this->mobile,
+            'address' => $this->address,
+            'guardian_name' => $this->guardian_name,
+            'guardian_relationship' => $this->guardian_relationship,
+            'guardian_phone' => $this->guardian_phone,
+            'guardian_email' => $this->guardian_email,
+            'blood_type' => $this->blood_type,
+            'medical_notes' => $this->medical_notes,
+            'section_id' => $this->section_id,
+            'section' => new SectionResource($this->whenLoaded('section')),
+            'grade_level_id' => $section?->grade_level_id,
+            'grade_level' => $this->when($gradeLevel !== null, fn () => new GradeLevelResource($gradeLevel)),
             'school_year_id' => $this->school_year_id,
             'school_year' => new SchoolYearResource($this->whenLoaded('schoolYear')),
+            // The subjects the student takes (each student has their own list).
+            'subjects' => SubjectResource::collection($this->whenLoaded('subjects')),
             'assignments_count' => $this->whenCounted('assignments'),
             // Per-status counts, present when loaded with PaceAssignment::statusCounts().
             'tested_count' => $this->whenCounted('tested'),
@@ -47,12 +65,13 @@ class StudentResource extends JsonResource
                     : null
             ),
             'assignments' => PaceAssignmentResource::collection($this->whenLoaded('assignments')),
-            'creator' => $this->whenLoaded('creator', fn () => [
+            // Enrollment history (detail endpoint): every section the student has been in, latest first.
+            'enrollments' => StudentEnrollmentResource::collection($this->whenLoaded('enrollments')),
+            // Who registered the student (an audit detail, not an owner).
+            'registered_by' => $this->whenLoaded('creator', fn () => $this->creator === null ? null : [
                 'id' => $this->creator->id,
                 'name' => $this->creator->name,
                 'email' => $this->creator->email,
-                'organization_name' => $this->creator->relationLoaded('organization') ? $this->creator->organization?->name : null,
-                'branch_name' => $this->creator->relationLoaded('branch') ? $this->creator->branch?->name : null,
             ]),
             'created_at' => $this->created_at?->toISOString(),
             'updated_at' => $this->updated_at?->toISOString(),

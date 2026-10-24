@@ -2,9 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Models\JoinRequest;
 use App\Models\Organization;
+use App\Models\PaceRequest;
 use App\Models\Plan;
 use App\Models\PlanRequest;
+use App\Models\StudentChangeRequest;
+use App\Models\TeachingAssignmentRequest;
 use App\Models\User;
 use Illuminate\Support\Carbon;
 
@@ -95,6 +99,42 @@ class PlatformTest extends ApiTestCase
 
     /* ------------------------------------------------------ staff */
 
+    public function test_the_platform_staff_get_the_requests_waiting_across_every_school_for_the_navigation_badges(): void
+    {
+        $alpha = $this->organization(['name' => 'Alpha School']);
+        $beta = $this->organization(['name' => 'Beta School']);
+
+        JoinRequest::factory()->create(['organization_id' => $alpha->id]);
+        JoinRequest::factory()->create(['organization_id' => $beta->id]);
+        JoinRequest::factory()->create(['organization_id' => $beta->id, 'status' => 'declined']);
+        PlanRequest::factory()->create(['organization_id' => $alpha->id]);
+        PaceRequest::factory()->create(['organization_id' => $beta->id]);
+        TeachingAssignmentRequest::factory()->create(['organization_id' => $alpha->id]);
+        StudentChangeRequest::factory()->create(['organization_id' => $beta->id]);
+
+        $this->signIn(User::factory()->owner()->create());
+
+        $counts = $this->getJson('/api/user')->assertOk()->json('data.pending_counts');
+
+        $this->assertSame(2, $counts['join_requests']);
+        $this->assertSame(1, $counts['plan_requests']);
+        $this->assertSame(1, $counts['pace_requests']);
+        $this->assertSame(1, $counts['teaching_requests']);
+        $this->assertSame(1, $counts['student_changes']);
+
+        // A deactivated school's requests no longer wait for anyone.
+        $beta->delete();
+
+        $after = $this->getJson('/api/user')->assertOk()->json('data.pending_counts');
+        $this->assertSame(1, $after['join_requests']);
+        $this->assertSame(1, $after['plan_requests']);
+
+        // School members never get the platform-wide counts.
+        $this->forgetGuards();
+        $this->signIn($this->admin($alpha));
+        $this->getJson('/api/user')->assertOk()->assertJsonMissingPath('data.pending_counts');
+    }
+
     public function test_the_owner_manages_platform_staff(): void
     {
         $owner = $this->signIn($this->platformOwner());
@@ -102,7 +142,12 @@ class PlatformTest extends ApiTestCase
         $this->getJson('/api/owner/staff')->assertOk()->assertJsonCount(1, 'data');
 
         $created = $this->postJson('/api/owner/staff', [
-            'name' => 'Vera Vice',
+            'first_name' => 'Vera',
+            'middle_name' => 'Ines',
+            'last_name' => 'Vice',
+            'suffix' => 'Jr.',
+            'phone' => '+63 917 555 0199',
+            'address' => '1 Palm Street, Makati',
             'email' => 'vera@example.com',
             'password' => 'secret-password',
             'password_confirmation' => 'secret-password',
@@ -112,11 +157,37 @@ class PlatformTest extends ApiTestCase
             ->assertJsonPath('data.role', 'vice_admin')
             ->assertJsonPath('data.is_platform', true)
             ->assertJsonPath('data.is_owner', false)
-            ->assertJsonPath('data.organization_id', null);
+            ->assertJsonPath('data.organization_id', null)
+            // The full name is composed from the parts, which are kept with the contact details.
+            ->assertJsonPath('data.name', 'Vera Ines Vice Jr.')
+            ->assertJsonPath('data.first_name', 'Vera')
+            ->assertJsonPath('data.middle_name', 'Ines')
+            ->assertJsonPath('data.last_name', 'Vice')
+            ->assertJsonPath('data.suffix', 'Jr.')
+            ->assertJsonPath('data.phone', '+63 917 555 0199')
+            ->assertJsonPath('data.address', '1 Palm Street, Makati')
+            // Created by the owner, not signed up: no terms acceptance is recorded.
+            ->assertJsonPath('data.terms_accepted_at', null);
 
         $viceId = $created->json('data.id');
 
-        $this->postJson('/api/owner/staff', ['name' => 'X', 'email' => 'x@example.com', 'password' => 'secret-password', 'password_confirmation' => 'secret-password', 'role' => 'admin'])
+        // The first name, surname and contact number are required; the other parts are optional.
+        $this->postJson('/api/owner/staff', ['email' => 'y@example.com', 'password' => 'secret-password', 'password_confirmation' => 'secret-password', 'role' => 'vice_admin'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['first_name', 'last_name', 'phone']);
+
+        $this->postJson('/api/owner/staff', ['first_name' => 'Y', 'last_name' => 'Why', 'phone' => 'call me', 'email' => 'y@example.com', 'password' => 'secret-password', 'password_confirmation' => 'secret-password', 'role' => 'vice_admin'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['phone']);
+
+        $this->postJson('/api/owner/staff', ['first_name' => 'Plain', 'last_name' => 'Person', 'phone' => '0917 000 1111', 'email' => 'plain@example.com', 'password' => 'secret-password', 'password_confirmation' => 'secret-password', 'role' => 'vice_admin'])
+            ->assertCreated()
+            ->assertJsonPath('data.name', 'Plain Person')
+            ->assertJsonPath('data.middle_name', null)
+            ->assertJsonPath('data.address', null);
+        User::query()->where('email', 'plain@example.com')->delete();
+
+        $this->postJson('/api/owner/staff', ['first_name' => 'X', 'last_name' => 'Ex', 'phone' => '0917 000 2222', 'email' => 'x@example.com', 'password' => 'secret-password', 'password_confirmation' => 'secret-password', 'role' => 'admin'])
             ->assertUnprocessable()
             ->assertJsonValidationErrors(['role']);
 
@@ -156,7 +227,7 @@ class PlatformTest extends ApiTestCase
         $this->student([], $teacherB);
 
         $this->signIn($teacherA);
-        $grade = $this->gradeLevel('Grade 1', $teacherA);
+        $section = $this->section($this->gradeLevel('Grade 1', $teacherA), $teacherA);
 
         $this->postJson('/api/students', [
             'first_name' => 'One',
@@ -164,7 +235,7 @@ class PlatformTest extends ApiTestCase
             'birth_date' => '2015-01-01',
             'age' => 11,
             'sex' => 'female',
-            'grade_level_id' => $grade->id,
+            'section_id' => $section->id,
         ])
             ->assertUnprocessable()
             ->assertJsonValidationErrors(['students']);

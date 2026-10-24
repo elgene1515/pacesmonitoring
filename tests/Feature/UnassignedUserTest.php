@@ -146,20 +146,19 @@ class UnassignedUserTest extends ApiTestCase
 
     public function test_an_account_that_owns_records_reports_them(): void
     {
+        // Students, grade levels and PACEs belong to the school now; what an account
+        // still owns is the school years it registered and its stock requests.
         $teacher = User::factory()->unassigned()->create();
-        $this->pace([], $teacher);
-        $this->pace([], $teacher);
-        PaceRequest::factory()->create(['user_id' => $teacher->id]);
+        PaceRequest::factory()->count(2)->create(['user_id' => $teacher->id]);
 
         $this->signIn($this->platformOwner());
 
         $this->getJson('/api/owner/unassigned-users')
             ->assertOk()
             ->assertJsonPath('data.0.id', $teacher->id)
-            ->assertJsonPath('data.0.records.paces', 2)
-            ->assertJsonPath('data.0.records.pace_requests', 1)
-            ->assertJsonPath('data.0.records.students', 0)
-            ->assertJsonPath('data.0.records.total', 3);
+            ->assertJsonPath('data.0.records.pace_requests', 2)
+            ->assertJsonPath('data.0.records.school_years', 0)
+            ->assertJsonPath('data.0.records.total', 2);
     }
 
     public function test_the_owner_can_delete_an_account_with_their_password(): void
@@ -192,9 +191,7 @@ class UnassignedUserTest extends ApiTestCase
     public function test_an_account_that_still_owns_records_cannot_be_deleted(): void
     {
         $teacher = User::factory()->unassigned()->create();
-        $this->pace([], $teacher);
-        $this->pace([], $teacher);
-        PaceRequest::factory()->create(['user_id' => $teacher->id]);
+        PaceRequest::factory()->count(2)->create(['user_id' => $teacher->id]);
 
         $this->signIn($this->platformOwner());
 
@@ -202,10 +199,9 @@ class UnassignedUserTest extends ApiTestCase
             ->assertUnprocessable()
             ->assertJsonValidationErrors(['user']);
 
-        $this->assertStringContainsString('2 paces, 1 pace requests', $response->json('errors.user.0'));
+        $this->assertStringContainsString('2 pace requests', $response->json('errors.user.0'));
         $this->assertDatabaseHas('users', ['id' => $teacher->id]);
-        $this->assertDatabaseCount('paces', 2);
-        $this->assertDatabaseCount('pace_requests', 1);
+        $this->assertDatabaseCount('pace_requests', 2);
     }
 
     public function test_only_unassigned_non_platform_accounts_can_be_deleted_here(): void

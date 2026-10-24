@@ -1,7 +1,8 @@
 /**
- * A teacher's request to join an organization's branch.
+ * A request to join an organization's branch: from a teacher, or from an
+ * admin-type account that wants to join as an administrator.
  *
- * API shape: {id, status, message, decline_reason, user_id, organization_id, branch_id,
+ * API shape: {id, status, message, decline_reason, user_id, organization_id, branch_id, requested_role,
  *             user?: {id, name, email, created_at}, organization?: {id, name, code}, branch?: {id, name, code},
  *             decided_by?: {id, name}, decided_at, created_at}
  */
@@ -14,6 +15,7 @@ export default class JoinRequest {
         userId = null,
         organizationId = null,
         branchId = null,
+        requestedRole = 'teacher',
         user = null,
         organization = null,
         branch = null,
@@ -29,6 +31,8 @@ export default class JoinRequest {
         this.userId = userId;
         this.organizationId = organizationId;
         this.branchId = branchId;
+        /** 'teacher' | 'admin': what the person asked to join as. */
+        this.requestedRole = requestedRole;
         this.user = user;
         this.organization = organization;
         this.branch = branch;
@@ -47,6 +51,15 @@ export default class JoinRequest {
 
     get isAccepted() {
         return this.status === 'accepted';
+    }
+
+    /** They asked to join as a school administrator (the accepting admin still picks). */
+    get wantsAdmin() {
+        return this.requestedRole === 'admin';
+    }
+
+    get requestedRoleLabel() {
+        return this.wantsAdmin ? 'Administrator' : 'Teacher';
     }
 
     get statusLabel() {
@@ -78,6 +91,7 @@ export default class JoinRequest {
             userId: json.user_id ?? null,
             organizationId: json.organization_id ?? null,
             branchId: json.branch_id ?? null,
+            requestedRole: json.requested_role ?? 'teacher',
             user: json.user ?? null,
             organization: json.organization ?? null,
             branch: json.branch ?? null,

@@ -8,6 +8,9 @@ import { notify } from '../../../stores/notifications';
 import { formatDate, formatScore, pluralize } from '../../../core/format';
 import EmptyState from '../../ui/EmptyState.vue';
 import AppIcon from '../../ui/AppIcon.vue';
+import ConfirmDialog from '../../ui/ConfirmDialog.vue';
+import SearchSelect from '../../ui/SearchSelect.vue';
+import StudentFormModal from '../../students/StudentFormModal.vue';
 import PaceRecordsBar from '../../charts/PaceRecordsBar.vue';
 import PaceRecordsLegend from '../../charts/PaceRecordsLegend.vue';
 
@@ -69,8 +72,6 @@ const branchId = ref('');
  */
 const showBranchFilter = computed(() => (!auth.isPlatform || scope.isScoped || schoolId.value !== '') && branches.value.length > 1);
 
-/** With several schools in the list, each student's row names the teacher's school. */
-const showSchoolName = computed(() => auth.isPlatform && !scope.isScoped && schoolId.value === '');
 
 const teachers = ref([]);
 const teacherId = ref('');
@@ -80,10 +81,31 @@ const schoolYears = ref([]);
 const schoolYearId = ref('');
 const loadingSchoolYears = ref(false);
 
-/** Depends on the selected teacher and school year. */
+/** The grade levels of the selected branch and school year, and the selected one's sections. */
 const gradeLevels = ref([]);
 const gradeLevelId = ref('');
 const loadingGradeLevels = ref(false);
+const sectionId = ref('');
+
+const sectionOptions = computed(() => gradeLevels.value.find((level) => level.id === Number(gradeLevelId.value))?.sections ?? []);
+
+/* Enroll / edit / delete */
+const formOpen = ref(false);
+const editing = ref(null);
+const formSections = ref([]);
+const loadingFormSections = ref(false);
+/** The school the Enroll form is for (platform owner without a school in the scope bar) and its branches. */
+const formSchoolId = ref('');
+const formBranches = ref([]);
+/** The school filter's choices: every school, or none picked. */
+const schoolFilterOptions = computed(() => [{ value: '', label: 'All schools' }, ...organizations.value.map((school) => ({ value: school.id, label: school.name }))]);
+/** The branches that narrow the Enroll form's sections: the chosen school's for the owner, the school's own otherwise. */
+const formBranchOptions = computed(() => (showSchoolFilter.value ? (editing.value ? [] : formBranches.value) : branches.value));
+const formOrganizations = computed(() => (showSchoolFilter.value && !editing.value ? organizations.value : []));
+const deleting = ref(null);
+const removing = ref(false);
+
+const pendingChanges = computed(() => auth.organization?.pendingStudentChangeRequestsCount ?? 0);
 
 let searchTimer = null;
 
@@ -96,6 +118,7 @@ const hasFilters = computed(() => (
     || branchId.value !== ''
     || teacherId.value !== ''
     || gradeLevelId.value !== ''
+    || sectionId.value !== ''
     || schoolYearId.value !== ''
 ));
 /** The loaded students narrowed by the sex and score-range filters (the rest are filtered by the server). */
@@ -133,6 +156,7 @@ async function load() {
             branch_id: branchId.value,
             teacher_id: teacherId.value,
             grade_level_id: gradeLevelId.value,
+            section_id: sectionId.value,
             school_year_id: schoolYearId.value,
         });
         loaded.value = true;
@@ -178,6 +202,7 @@ async function onSchoolChange() {
     teacherId.value = '';
     schoolYearId.value = '';
     gradeLevelId.value = '';
+    sectionId.value = '';
     gradeLevels.value = [];
 
     await Promise.all([loadBranches(), loadTeachers(), loadSchoolYears()]);
@@ -185,14 +210,42 @@ async function onSchoolChange() {
     load();
 }
 
-/** Changing the branch drops the teacher (and so the grade level) filter and offers only that branch's teachers. */
+/** Changing the branch drops the teacher and grade level filters and offers only that branch's teachers and grade levels. */
 async function onBranchChange() {
     teacherId.value = '';
+
+    await Promise.all([loadTeachers(), reloadGradeLevels()]);
+
+    load();
+}
+
+/** The grade levels of the chosen branch and school year (none until a school year is picked). */
+async function reloadGradeLevels() {
     gradeLevelId.value = '';
+    sectionId.value = '';
     gradeLevels.value = [];
 
-    await loadTeachers();
+    if (!schoolYearId.value) {
+        return;
+    }
 
+    loadingGradeLevels.value = true;
+
+    try {
+        gradeLevels.value = await adminService.listGradeLevels({
+            ...schoolParams(),
+            branch_id: branchId.value,
+            school_year_id: schoolYearId.value,
+        });
+    } catch (err) {
+        notify.error(err?.message ?? 'Failed to load grade levels.');
+    } finally {
+        loadingGradeLevels.value = false;
+    }
+}
+
+function onGradeLevelChange() {
+    sectionId.value = '';
     load();
 }
 
@@ -209,35 +262,101 @@ async function loadSchoolYears(teacherId = null) {
     }
 }
 
-/** Changing the teacher drops the school year and grade level filters and reloads the school years. */
-async function onTeacherChange() {
-    schoolYearId.value = '';
-    gradeLevelId.value = '';
-    gradeLevels.value = [];
+/** The teacher filter narrows the students to the sections that teacher teaches in. */
+function onTeacherChange() {
+    load();
+}
 
-    await loadSchoolYears(teacherId.value);
+/** Changing the school year reloads the grade levels for that year. */
+async function onSchoolYearChange() {
+    await reloadGradeLevels();
 
     load();
 }
 
-/** Changing the school year drops the grade level filter and reloads the grade levels for that year. */
-async function onSchoolYearChange() {
-    gradeLevelId.value = '';
-    gradeLevels.value = [];
+/** Every section of the school, with its grade level and school year, for the enroll / edit form. */
+async function loadFormSections(organizationId = null) {
+    loadingFormSections.value = true;
 
-    if (schoolYearId.value && teacherId.value) {
-        loadingGradeLevels.value = true;
+    try {
+        const levels = await adminService.listGradeLevels(organizationId ? { organization_id: organizationId } : schoolParams());
 
-        try {
-            gradeLevels.value = await adminService.listGradeLevels(teacherId.value, schoolYearId.value);
-        } catch (err) {
-            notify.error(err?.message ?? 'Failed to load grade levels.');
-        } finally {
-            loadingGradeLevels.value = false;
-        }
+        formSections.value = levels.flatMap((level) => level.sections.map((section) => {
+            section.gradeLevel = level;
+            return section;
+        }));
+    } catch (err) {
+        notify.error(err?.message ?? 'Failed to load the sections.');
+    } finally {
+        loadingFormSections.value = false;
+    }
+}
+
+/** The owner picked a school in the Enroll form: offer that school's branches and sections. */
+async function onFormSchoolChange(id) {
+    formSchoolId.value = id;
+    formSections.value = [];
+    formBranches.value = [];
+
+    if (!id) {
+        return;
     }
 
-    load();
+    loadFormSections(id);
+
+    try {
+        formBranches.value = await adminService.listBranches({ organization_id: id });
+    } catch {
+        formBranches.value = [];
+    }
+}
+
+function openEnroll() {
+    editing.value = null;
+    formOpen.value = true;
+    formSections.value = [];
+    formBranches.value = [];
+    formSchoolId.value = '';
+
+    if (showSchoolFilter.value) {
+        // The page's school filter (or the only school there is) starts the form; otherwise the owner picks one first.
+        const preselected = schoolId.value !== '' ? schoolId.value : (organizations.value.length === 1 ? organizations.value[0].id : '');
+
+        if (preselected !== '') {
+            onFormSchoolChange(preselected);
+        }
+
+        return;
+    }
+
+    loadFormSections();
+}
+
+function openEdit(student) {
+    editing.value = student;
+    formOpen.value = true;
+    loadFormSections(showSchoolFilter.value ? student.organizationId ?? null : null);
+}
+
+async function confirmRemove() {
+    const target = deleting.value;
+
+    if (removing.value || !target) {
+        return;
+    }
+
+    removing.value = true;
+
+    try {
+        await adminService.removeStudent(target.id);
+        notify.success(`${target.displayName} deleted.`);
+        deleting.value = null;
+        load();
+    } catch (err) {
+        notify.error(err?.message ?? 'Unable to delete the student.');
+    } finally {
+        removing.value = false;
+    }
 }
 
 function clearFilters() {
@@ -253,6 +372,7 @@ function clearFilters() {
     teacherId.value = '';
     schoolYearId.value = '';
     gradeLevelId.value = '';
+    sectionId.value = '';
     gradeLevels.value = [];
 
     if (hadSchool) {
@@ -295,7 +415,17 @@ onBeforeUnmount(() => {
 <template>
     <div class="admin-students">
         <div class="page-header">
-            <h1>Students</h1>
+            <div>
+                <h1>Students</h1>
+                <p class="muted subtitle">Every student is enrolled in one section and shared by the teachers of that section.</p>
+            </div>
+            <div class="page-actions">
+                <RouterLink :to="{ name: 'admin-student-change-requests' }" class="btn btn-secondary">
+                    Proposed changes
+                    <span v-if="pendingChanges > 0" class="count-badge" :title="pluralize(pendingChanges, 'pending proposal')">{{ pendingChanges }}</span>
+                </RouterLink>
+                <button type="button" class="btn" :disabled="!auth.canWrite" @click="openEnroll">Enroll student</button>
+            </div>
         </div>
 
         <div class="card">
@@ -306,13 +436,18 @@ onBeforeUnmount(() => {
                         v-model="search"
                         class="input search"
                         type="search"
-                        placeholder="Search by name"
-                        aria-label="Search students"
+                        placeholder="Search by name or student ID"
+                        aria-label="Search students by name or student ID"
                     />
-                    <select v-if="showSchoolFilter" v-model="schoolId" class="input select" aria-label="Filter by school" @change="onSchoolChange">
-                        <option value="">All schools</option>
-                        <option v-for="school in organizations" :key="school.id" :value="school.id">{{ school.name }}</option>
-                    </select>
+                    <SearchSelect
+                        v-if="showSchoolFilter"
+                        v-model="schoolId"
+                        class="school-select"
+                        :options="schoolFilterOptions"
+                        aria-label="Filter by school"
+                        empty-text="No school matches"
+                        @change="onSchoolChange"
+                    />
                     <select v-if="showBranchFilter" v-model="branchId" class="input select" aria-label="Filter by branch" @change="onBranchChange">
                         <option value="">All branches</option>
                         <option v-for="branch in branches" :key="branch.id" :value="branch.id">{{ branch.name }}</option>
@@ -339,15 +474,25 @@ onBeforeUnmount(() => {
                         v-model="gradeLevelId"
                         class="input select"
                         aria-label="Filter by grade level"
-                        :disabled="!teacherId || !schoolYearId || loadingGradeLevels"
-                        @change="load"
+                        :disabled="!schoolYearId || loadingGradeLevels"
+                        @change="onGradeLevelChange"
                     >
                         <option value="">
-                            {{ teacherId && schoolYearId ? 'All grade levels' : 'Pick a teacher and school year first' }}
+                            {{ schoolYearId ? 'All grade levels' : 'Pick a school year first' }}
                         </option>
                         <option v-for="level in gradeLevels" :key="level.id" :value="level.id">
-                            {{ level.name }}
+                            {{ showBranchFilter && !branchId && level.branchName ? `${level.name} · ${level.branchName}` : level.name }}
                         </option>
+                    </select>
+                    <select
+                        v-model="sectionId"
+                        class="input select"
+                        aria-label="Filter by section"
+                        :disabled="!gradeLevelId"
+                        @change="load"
+                    >
+                        <option value="">{{ gradeLevelId ? 'All sections' : 'Pick a grade level first' }}</option>
+                        <option v-for="section in sectionOptions" :key="section.id" :value="section.id">{{ section.name }}</option>
                     </select>
                     <select v-model="sexFilter" class="input select select-sm" aria-label="Filter by sex">
                         <option value="">All sexes</option>
@@ -394,8 +539,9 @@ onBeforeUnmount(() => {
             <p v-if="loading && !loaded" class="muted state">Loading…</p>
 
             <EmptyState v-else-if="visibleStudents.length === 0" :message="emptyMessage">
-                <template v-if="hasFilters" #action>
-                    <button type="button" class="btn btn-secondary btn-sm" @click="clearFilters">Clear filters</button>
+                <template #action>
+                    <button v-if="hasFilters" type="button" class="btn btn-secondary btn-sm" @click="clearFilters">Clear filters</button>
+                    <button v-else type="button" class="btn btn-secondary btn-sm" :disabled="!auth.canWrite" @click="openEnroll">Enroll student</button>
                 </template>
             </EmptyState>
 
@@ -403,6 +549,7 @@ onBeforeUnmount(() => {
                 <table class="table">
                     <!-- Fixed column widths so every column lines up down the page. -->
                     <colgroup>
+                        <col class="col-student-id" />
                         <col class="col-name" />
                         <col class="col-grade" />
                         <col class="col-year" />
@@ -416,10 +563,11 @@ onBeforeUnmount(() => {
                     </colgroup>
                     <thead>
                         <tr>
+                            <th>Student ID</th>
                             <th>Name</th>
-                            <th>Grade level</th>
+                            <th>Class</th>
                             <th>School year</th>
-                            <th>Teacher</th>
+                            <th>Branch</th>
                             <th>Sex</th>
                             <th>Age</th>
                             <th>Birth date</th>
@@ -430,17 +578,24 @@ onBeforeUnmount(() => {
                     </thead>
                     <tbody>
                         <tr v-for="student in visibleStudents" :key="student.id">
+                            <td class="mono ellipsis" :title="student.studentNumber || ''">
+                                <span v-if="student.studentNumber">{{ student.studentNumber }}</span>
+                                <span v-else class="muted">—</span>
+                            </td>
                             <td class="ellipsis">
                                 <RouterLink :to="{ name: 'admin-student-detail', params: { id: student.id } }" class="name">
                                     {{ student.fullName }}
                                 </RouterLink>
                             </td>
-                            <td class="ellipsis">{{ student.gradeLevelName || '—' }}</td>
+                            <td class="ellipsis" :title="student.classLabel">
+                                <RouterLink v-if="student.sectionId" :to="{ name: 'admin-section-detail', params: { id: student.sectionId } }">
+                                    {{ student.classLabel || '—' }}
+                                </RouterLink>
+                                <span v-else>—</span>
+                            </td>
                             <td class="mono">{{ student.schoolYearName || '—' }}</td>
-                            <td class="ellipsis" :title="[student.creatorName, student.creatorBranchName, student.creatorOrganizationName].filter(Boolean).join(' · ')">
-                                {{ student.creatorName || '—' }}
-                                <span v-if="showBranchFilter && student.creatorBranchName" class="muted small">{{ student.creatorBranchName }}</span>
-                                <span v-else-if="showSchoolName && student.creatorOrganizationName" class="muted small">{{ student.creatorOrganizationName }}</span>
+                            <td class="ellipsis" :title="student.registeredByName ? `Registered by ${student.registeredByName}` : ''">
+                                {{ student.branchName || '—' }}
                             </td>
                             <td>{{ student.sexLabel || '—' }}</td>
                             <td class="mono">{{ student.age ?? '—' }}</td>
@@ -468,12 +623,58 @@ onBeforeUnmount(() => {
                                 >
                                     <AppIcon name="eye" />
                                 </RouterLink>
+                                <button
+                                    type="button"
+                                    class="btn btn-link btn-sm btn-icon"
+                                    :title="`Edit or move ${student.displayName}`"
+                                    :aria-label="`Edit ${student.displayName}`"
+                                    :disabled="!auth.canWrite"
+                                    @click="openEdit(student)"
+                                >
+                                    <AppIcon name="pencil" />
+                                </button>
+                                <button
+                                    type="button"
+                                    class="btn btn-link btn-sm btn-icon text-danger"
+                                    :title="`Delete ${student.displayName}`"
+                                    :aria-label="`Delete ${student.displayName}`"
+                                    :disabled="!auth.canWrite"
+                                    @click="deleting = student"
+                                >
+                                    <AppIcon name="trash" />
+                                </button>
                             </td>
                         </tr>
                     </tbody>
                 </table>
             </div>
         </div>
+
+        <StudentFormModal
+            v-model="formOpen"
+            admin
+            :student="editing"
+            :section-id="sectionId || null"
+            :sections="formSections"
+            :loading-sections="loadingFormSections"
+            :organizations="formOrganizations"
+            :organization-id="formSchoolId || null"
+            :branches="formBranchOptions"
+            :branch-id="branchId || null"
+            @school-change="onFormSchoolChange"
+            @saved="load"
+        />
+
+        <ConfirmDialog
+            :model-value="deleting !== null"
+            title="Delete student"
+            :busy="removing"
+            @update:model-value="deleting = null"
+            @confirm="confirmRemove"
+        >
+            Delete <strong v-if="deleting">{{ deleting.displayName }}</strong>? All of their PACE records will be deleted as well.
+            This cannot be undone.
+        </ConfirmDialog>
     </div>
 </template>
 
@@ -482,6 +683,30 @@ onBeforeUnmount(() => {
     display: flex;
     flex-direction: column;
     gap: 20px;
+}
+
+.page-header {
+    margin-bottom: 0;
+}
+
+.subtitle {
+    margin: 4px 0 0;
+}
+
+.count-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    margin-left: 2px;
+    border-radius: 999px;
+    background: var(--danger);
+    color: var(--on-danger);
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1;
 }
 
 .card {
@@ -518,6 +743,11 @@ onBeforeUnmount(() => {
 
 .select {
     flex: 0 1 190px;
+}
+
+.school-select {
+    flex: 0 1 220px;
+    min-width: 170px;
 }
 
 .select-sm {
@@ -561,12 +791,16 @@ onBeforeUnmount(() => {
 }
 
 .table {
-    min-width: 1180px;
+    min-width: 1350px;
     table-layout: fixed;
 }
 
+.col-student-id {
+    width: 110px;
+}
+
 .col-grade {
-    width: 120px;
+    width: 180px;
 }
 
 .col-year {
@@ -598,7 +832,11 @@ onBeforeUnmount(() => {
 }
 
 .col-actions {
-    width: 60px;
+    width: 124px;
+}
+
+.table-actions .btn + .btn {
+    margin-left: 2px;
 }
 
 .name {

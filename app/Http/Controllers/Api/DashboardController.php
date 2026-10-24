@@ -6,9 +6,13 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\SchoolYearResource;
 use App\Http\Resources\StudentResource;
 use App\Models\GradeLevel;
+use App\Models\Pace;
 use App\Models\SchoolYear;
+use App\Models\Section;
+use App\Models\Subject;
 use App\Services\DashboardService;
 use App\Services\SchoolYearService;
+use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -22,41 +26,28 @@ class DashboardController extends Controller
     }
 
     /**
-     * Headline counts and the most recently registered students for the home page,
-     * limited to the current user's records in one school year.
+     * Headline counts and the most recently enrolled students for the home
+     * page, over what the teacher's assignments cover, in one school year.
      *
      * `?school_year_id=` picks the school year; `all` requests all-time totals
-     * across every school year; omitting it uses the user's current school year,
-     * and a user with no school years sees all-time counts either way.
+     * across every school year; omitting it uses the teacher's current school
+     * year, and a teacher with no school years sees all-time counts either way.
      *
-     * `?grade_level_id=` and `?subject_id=` narrow the figures further to one of
-     * the user's grade levels (its students and the records under its subjects)
-     * and to one subject's records. `?pace_id=` narrows the records (and the PACE
-     * count) to one of the user's PACEs.
+     * `?grade_level_id=`, `?section_id=` and `?subject_id=` narrow the figures
+     * further to one of the grade levels the teacher teaches in (its students and
+     * the records under its subjects), to one of their sections, and to one of
+     * their subjects. `?pace_id=` narrows the records
+     * (and the PACE count) to one PACE of the branch's catalog.
      */
     public function summary(Request $request): JsonResponse
     {
         $user = $request->user();
 
         $scope = $request->validate([
-            'grade_level_id' => [
-                'nullable',
-                'integer',
-                Rule::exists('grade_levels', 'id')->where('user_id', $user->id),
-            ],
-            'subject_id' => [
-                'nullable',
-                'integer',
-                Rule::exists('subjects', 'id')->whereIn(
-                    'grade_level_id',
-                    GradeLevel::query()->ownedBy($user)->pluck('id')->all()
-                ),
-            ],
-            'pace_id' => [
-                'nullable',
-                'integer',
-                Rule::exists('paces', 'id')->where('created_by', $user->id),
-            ],
+            'grade_level_id' => ['nullable', 'integer', $this->visible(GradeLevel::query()->ownedBy($user), 'grade level')],
+            'section_id' => ['nullable', 'integer', $this->visible(Section::query()->ownedBy($user), 'section')],
+            'subject_id' => ['nullable', 'integer', $this->visible(Subject::query()->ownedBy($user), 'subject')],
+            'pace_id' => ['nullable', 'integer', $this->visible(Pace::query()->ownedBy($user), 'PACE')],
         ]);
 
         if ($request->query('school_year_id') === 'all') {
@@ -81,6 +72,7 @@ class DashboardController extends Controller
             'data' => [
                 'school_year' => $summary['school_year'] ? (new SchoolYearResource($summary['school_year']))->resolve() : null,
                 'grade_levels' => $summary['grade_levels'],
+                'sections' => $summary['sections'],
                 'students' => $summary['students'],
                 'paces' => $summary['paces'],
                 'assignments' => $summary['assignments'],
@@ -102,5 +94,17 @@ class DashboardController extends Controller
                 'totals' => $summary['totals'],
             ],
         ]);
+    }
+
+    /**
+     * The id must be one of the records the teacher can see.
+     */
+    protected function visible(\Illuminate\Database\Eloquent\Builder $query, string $label): Closure
+    {
+        return function (string $attribute, mixed $value, Closure $fail) use ($query, $label): void {
+            if (! (clone $query)->whereKey((int) $value)->exists()) {
+                $fail("The selected {$label} is invalid.");
+            }
+        };
     }
 }

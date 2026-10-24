@@ -1,48 +1,53 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue';
-import { useReferenceStore } from '../../stores/reference';
+import { adminService } from '../../services';
 import { notify } from '../../stores/notifications';
-import { Subject } from '../../models';
+import { Subject, Section } from '../../models';
 import AppModal from '../ui/AppModal.vue';
 import AppField from '../ui/AppField.vue';
 
 /**
- * Create / edit a subject under a grade level through the reference store.
+ * Admin: create / edit a subject or a section under a grade level (both are a
+ * name plus an optional sort order).
  *
  *  props   modelValue  Boolean          open state (v-model)
- *          gradeLevel  GradeLevel       the grade level the subject belongs to
- *          subject     Subject|null     record to edit; null adds a new subject
+ *          kind        'subject'|'section'
+ *          gradeLevel  GradeLevel       the grade level the record belongs to
+ *          record      Subject|Section|null  record to edit; null adds a new one
  *  emits   update:modelValue(Boolean)
- *          saved(Subject)               the created / updated record returned by the API
+ *          saved(Subject|Section)       the created / updated record returned by the API
  */
 const props = defineProps({
     modelValue: { type: Boolean, default: false },
+    kind: { type: String, default: 'subject' },
     gradeLevel: { type: Object, default: null },
-    subject: { type: Object, default: null },
+    record: { type: Object, default: null },
 });
 
 const emit = defineEmits(['update:modelValue', 'saved']);
 
-const reference = useReferenceStore();
-const uid = `subject-${Math.random().toString(36).slice(2, 8)}`;
+const uid = `${props.kind}-${Math.random().toString(36).slice(2, 8)}`;
 
 const form = reactive({ name: '', sortOrder: '' });
 const submitting = ref(false);
 const clientErrors = ref({});
 const serverErrors = ref({});
 
-const isEdit = computed(() => Boolean(props.subject?.exists));
+const isSection = computed(() => props.kind === 'section');
+const noun = computed(() => (isSection.value ? 'section' : 'subject'));
+const isEdit = computed(() => Boolean(props.record?.exists));
 const title = computed(() => {
     const level = props.gradeLevel?.name ? ` · ${props.gradeLevel.name}` : '';
-    return (isEdit.value ? 'Edit subject' : 'Add subject') + level;
+    return (isEdit.value ? `Edit ${noun.value}` : `Add ${noun.value}`) + level;
 });
 const fieldErrors = computed(() => ({ ...clientErrors.value, ...serverErrors.value }));
+const nameHint = computed(() => (isSection.value ? 'e.g. Section 1, Ruby, St. Paul' : 'e.g. Math, English, Science'));
 
 function hydrate() {
     clientErrors.value = {};
     serverErrors.value = {};
-    form.name = props.subject?.name ?? '';
-    form.sortOrder = props.subject?.exists ? props.subject.sortOrder : '';
+    form.name = props.record?.name ?? '';
+    form.sortOrder = props.record?.exists ? props.record.sortOrder : '';
 }
 
 watch(
@@ -67,9 +72,9 @@ function validate() {
     const errors = {};
 
     if (!String(form.name).trim()) {
-        errors.name = ['Subject name is required.'];
+        errors.name = [`${isSection.value ? 'Section' : 'Subject'} name is required.`];
     } else if (String(form.name).trim().length > 100) {
-        errors.name = ['Subject name may not be longer than 100 characters.'];
+        errors.name = [`${isSection.value ? 'Section' : 'Subject'} name may not be longer than 100 characters.`];
     }
 
     if (form.sortOrder !== '' && form.sortOrder !== null) {
@@ -93,8 +98,9 @@ async function submit() {
         return;
     }
 
-    const model = new Subject({
-        id: props.subject?.id ?? null,
+    const Model = isSection.value ? Section : Subject;
+    const model = new Model({
+        id: props.record?.id ?? null,
         gradeLevelId: props.gradeLevel.id,
         name: String(form.name).trim(),
         sortOrder: form.sortOrder,
@@ -104,18 +110,28 @@ async function submit() {
     serverErrors.value = {};
 
     try {
-        const saved = isEdit.value
-            ? await reference.updateSubject(props.subject.id, model)
-            : await reference.createSubject(model);
+        let saved;
 
-        notify.success(isEdit.value ? 'Subject updated.' : `${saved.name} added to ${props.gradeLevel.name}.`);
+        if (isSection.value) {
+            saved = isEdit.value
+                ? await adminService.updateSection(props.record.id, model)
+                : await adminService.createSection(props.gradeLevel.id, model);
+        } else {
+            saved = isEdit.value
+                ? await adminService.updateSubject(props.record.id, model)
+                : await adminService.createSubject(props.gradeLevel.id, model);
+        }
+
+        notify.success(isEdit.value
+            ? `${isSection.value ? 'Section' : 'Subject'} updated.`
+            : `${saved.name} added to ${props.gradeLevel.name}.`);
         emit('saved', saved);
         emit('update:modelValue', false);
     } catch (err) {
         if (err?.isValidation && err.hasFieldErrors) {
             serverErrors.value = err.errors;
         } else {
-            notify.error(err?.message ?? 'Unable to save the subject.');
+            notify.error(err?.message ?? `Unable to save the ${noun.value}.`);
         }
     } finally {
         submitting.value = false;
@@ -137,7 +153,7 @@ async function submit() {
                 {{ Array.isArray(fieldErrors.grade_level_id) ? fieldErrors.grade_level_id[0] : fieldErrors.grade_level_id }}
             </p>
 
-            <AppField label="Subject name" :for="`${uid}-name`" :error="fieldErrors.name" hint="e.g. Math, English, Science" required>
+            <AppField :label="`${isSection ? 'Section' : 'Subject'} name`" :for="`${uid}-name`" :error="fieldErrors.name" :hint="nameHint" required>
                 <input
                     :id="`${uid}-name`"
                     v-model="form.name"
@@ -170,7 +186,7 @@ async function submit() {
             <div class="actions">
                 <button type="button" class="btn btn-secondary" :disabled="submitting" @click="close">Cancel</button>
                 <button type="submit" class="btn" :disabled="submitting">
-                    {{ submitting ? 'Saving…' : (isEdit ? 'Save changes' : 'Add subject') }}
+                    {{ submitting ? 'Saving…' : (isEdit ? 'Save changes' : `Add ${noun}`) }}
                 </button>
             </div>
         </form>

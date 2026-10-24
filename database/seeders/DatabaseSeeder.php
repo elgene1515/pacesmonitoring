@@ -9,13 +9,19 @@ class DatabaseSeeder extends Seeder
     /**
      * Seed the application's database.
      *
-     * Grade levels and subjects are no longer seeded: every user creates their
-     * own set from the "Grade levels" page after signing in.
+     * The plans come from the migrations, and a real school sets itself up
+     * from the app (the owner account is made with `php artisan
+     * user:make-owner`). Everywhere but production this also seeds a demo
+     * school to work with, see DemoSeeder.
      *
      * @return void
      */
     public function run()
     {
-        //
+        if (app()->environment('production')) {
+            return;
+        }
+
+        $this->call(DemoSeeder::class);
     }
 }

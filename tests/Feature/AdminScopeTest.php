@@ -8,8 +8,9 @@ use App\Models\User;
 
 /**
  * School-admin specifics added on top of the tenancy layer: branch-aware
- * analytics, read-only grade level / subject pages, the plan's admin limit,
- * and the school's address coming from its main branch.
+ * analytics, read-only grade level / subject / PACE pages that name the
+ * branch and the teachers, the plan's admin limit, and the school's address
+ * coming from its main branch.
  */
 class AdminScopeTest extends ApiTestCase
 {
@@ -32,7 +33,11 @@ class AdminScopeTest extends ApiTestCase
             ->assertOk()
             ->assertJsonPath('data.teachers', 2)
             ->assertJsonPath('data.students', 3)
+            ->assertJsonPath('data.sections', 2)
             ->assertJsonCount(2, 'data.teacher_activity')
+            ->assertJsonPath('data.teacher_activity.0.name', 'Bob North')
+            ->assertJsonPath('data.teacher_activity.0.students_count', 2)
+            ->assertJsonPath('data.teacher_activity.0.branch_name', 'North')
             ->assertJsonCount(3, 'data.recent_students')
             ->assertJsonCount(3, 'data.recent_users');
 
@@ -40,6 +45,7 @@ class AdminScopeTest extends ApiTestCase
             ->assertOk()
             ->assertJsonPath('data.teachers', 1)
             ->assertJsonPath('data.students', 2)
+            ->assertJsonPath('data.sections', 1)
             ->assertJsonCount(1, 'data.teacher_activity')
             ->assertJsonPath('data.teacher_activity.0.name', 'Bob North')
             ->assertJsonCount(2, 'data.recent_students')
@@ -56,7 +62,7 @@ class AdminScopeTest extends ApiTestCase
             ->assertJsonCount(1, 'data.recent_students');
     }
 
-    public function test_an_admins_subject_page_names_the_teacher_and_their_branch(): void
+    public function test_an_admins_subject_page_names_who_teaches_it_and_the_branch(): void
     {
         $organization = $this->organization();
         $north = Branch::factory()->create(['organization_id' => $organization->id, 'name' => 'North']);
@@ -67,49 +73,133 @@ class AdminScopeTest extends ApiTestCase
 
         $this->getJson('/api/admin/subjects/'.$math->id)
             ->assertOk()
-            ->assertJsonPath('data.grade_level.teacher.id', $teacher->id)
-            ->assertJsonPath('data.grade_level.teacher.name', 'Bob North')
-            ->assertJsonPath('data.grade_level.teacher.email', 'bob@school.test')
-            ->assertJsonPath('data.grade_level.teacher.branch_name', 'North')
-            // The grade level's school year is still there next to the teacher.
+            ->assertJsonCount(1, 'data.teaching_assignments')
+            ->assertJsonPath('data.teaching_assignments.0.teacher.id', $teacher->id)
+            ->assertJsonPath('data.teaching_assignments.0.teacher.name', 'Bob North')
+            ->assertJsonPath('data.teaching_assignments.0.teacher.email', 'bob@school.test')
+            ->assertJsonPath('data.teaching_assignments.0.section.name', 'Section 1')
+            ->assertJsonPath('data.grade_level.branch.name', 'North')
+            // The grade level's school year is still there next to the branch.
             ->assertJsonPath('data.grade_level.school_year.name', $math->gradeLevel->schoolYear->name);
 
-        // The teacher's own subject page does not carry it.
+        // The teacher's own subject page carries the same.
         $this->forgetGuards();
         $this->signIn($teacher);
 
         $this->getJson('/api/subjects/'.$math->id)
             ->assertOk()
-            ->assertJsonMissingPath('data.grade_level.teacher');
+            ->assertJsonPath('data.teaching_assignments.0.teacher.id', $teacher->id)
+            ->assertJsonPath('data.grade_level.branch.name', 'North');
     }
 
-    public function test_an_admins_pace_page_names_the_teacher_and_their_branch(): void
+    public function test_an_admins_pace_page_shows_the_branch_the_pool_and_each_teachers_booklets(): void
     {
         $organization = $this->organization();
         $north = Branch::factory()->create(['organization_id' => $organization->id, 'name' => 'North']);
         $teacher = User::factory()->inOrganization($organization, $north)->create(['name' => 'Bob North', 'email' => 'bob@school.test']);
-        $pace = $this->pace(['number' => '1042', 'name' => 'Word Building', 'stock' => 4], $teacher);
+        $pace = $this->pace(['number' => '1042', 'name' => 'Word Building', 'pool_stock' => 4, 'my_stock' => 2], $teacher);
 
         $this->signIn($this->admin($organization));
 
         $this->getJson('/api/admin/paces/'.$pace->id)
             ->assertOk()
-            ->assertJsonPath('data.teacher.id', $teacher->id)
-            ->assertJsonPath('data.teacher.name', 'Bob North')
-            ->assertJsonPath('data.teacher.email', 'bob@school.test')
-            ->assertJsonPath('data.teacher.branch_name', 'North')
-            // The rest of the page's data is still there next to the teacher.
+            ->assertJsonPath('data.branch.name', 'North')
+            ->assertJsonPath('data.branch.organization.name', $organization->name)
+            ->assertJsonPath('data.pool_stock', 4)
+            ->assertJsonPath('data.holdings_total', 2)
+            ->assertJsonPath('data.holdings.0.teacher.id', $teacher->id)
+            ->assertJsonPath('data.holdings.0.teacher.name', 'Bob North')
+            ->assertJsonPath('data.holdings.0.teacher.email', 'bob@school.test')
+            ->assertJsonPath('data.holdings.0.quantity', 2)
+            // The rest of the page's data is still there.
             ->assertJsonPath('data.number', '1042')
-            ->assertJsonPath('data.stock', 4)
             ->assertJsonPath('data.assignments_count', 0);
 
-        // The teacher's own PACE page does not carry it.
+        // The teacher's own PACE page shows their booklets, not everyone's.
         $this->forgetGuards();
         $this->signIn($teacher);
 
         $this->getJson('/api/paces/'.$pace->id)
             ->assertOk()
-            ->assertJsonMissingPath('data.teacher');
+            ->assertJsonPath('data.pool_stock', 4)
+            ->assertJsonPath('data.my_stock', 2)
+            ->assertJsonMissingPath('data.holdings');
+    }
+
+    public function test_the_owner_sees_the_school_of_each_pace_and_can_filter_the_list_by_school(): void
+    {
+        $alpha = $this->organization(['name' => 'Alpha School']);
+        $beta = $this->organization(['name' => 'Beta School']);
+        $teacherA = User::factory()->inOrganization($alpha, $alpha->branches()->firstOrFail())->create();
+        $teacherB = User::factory()->inOrganization($beta, $beta->branches()->firstOrFail())->create();
+        $this->pace(['number' => '1001', 'name' => 'Alpha PACE'], $teacherA);
+        $this->pace(['number' => '2001', 'name' => 'Beta PACE'], $teacherB);
+
+        $this->signIn(User::factory()->owner()->create());
+
+        $all = $this->getJson('/api/admin/paces')->assertOk()->assertJsonCount(2, 'data');
+        $this->assertEqualsCanonicalizing(['Alpha School', 'Beta School'], collect($all->json('data'))->pluck('branch.organization.name')->all());
+
+        $this->getJson('/api/admin/paces?organization_id='.$beta->id)
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.name', 'Beta PACE')
+            ->assertJsonPath('data.0.branch.organization.id', $beta->id);
+
+        $this->getJson('/api/admin/paces?organization_id=999999')->assertUnprocessable();
+
+        // A school admin stays inside their own school, whatever they ask for.
+        $this->forgetGuards();
+        $this->signIn($this->admin($alpha));
+
+        $this->getJson('/api/admin/paces?organization_id='.$beta->id)
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.name', 'Alpha PACE');
+    }
+
+    public function test_the_owners_analytics_name_the_organization_each_branch_belongs_to(): void
+    {
+        $alpha = $this->organization(['name' => 'Alpha School']);
+        $beta = $this->organization(['name' => 'Beta School']);
+
+        foreach ([$alpha, $beta] as $organization) {
+            $teacher = $this->teacher($organization, ['name' => 'Teacher of '.$organization->name]);
+            $grade = $this->gradeLevel('Grade 3', $teacher, ['Math']);
+            $math = $this->subject($grade, 'Math');
+            $student = $this->student(['grade_level_id' => $grade->id], $teacher);
+            $pace = $this->pace(['number' => '1001'], $teacher);
+
+            foreach ([90, 60, 70] as $score) {
+                $this->assignment(['student_id' => $student->id, 'pace_id' => $pace->id, 'subject_id' => $math->id, 'school_year' => $grade->schoolYear->name, 'score' => $score], $teacher);
+            }
+        }
+
+        $this->signIn($this->platformOwner());
+
+        $all = $this->getJson('/api/admin/dashboard/summary')->assertOk();
+
+        // Every organization at once: each row says where its branch belongs.
+        $this->assertEqualsCanonicalizing(['Alpha School', 'Beta School'], array_column($all->json('data.by_grade_level'), 'organization_name'));
+        $this->assertEqualsCanonicalizing(['Alpha School', 'Beta School'], array_column($all->json('data.by_subject'), 'organization_name'));
+        $this->assertEqualsCanonicalizing(['Alpha School', 'Beta School'], array_column($all->json('data.teacher_activity'), 'organization_name'));
+        $this->assertEqualsCanonicalizing(['Alpha School', 'Beta School'], array_column($all->json('data.hardest_paces'), 'organization_name'));
+        $this->assertNotContains('', array_column($all->json('data.by_subject'), 'branch_name'));
+        $this->assertNotContains('', array_column($all->json('data.hardest_paces'), 'branch_name'));
+        $this->assertEqualsCanonicalizing(['Alpha School', 'Beta School'], array_map(fn (array $student) => $student['section']['grade_level']['branch']['organization']['name'], $all->json('data.recent_students')));
+        $this->assertSame(2, $all->json('data.students'));
+        $this->assertSame(6, $all->json('data.assignments'));
+
+        // One organization: every figure follows, and every row belongs to it.
+        $one = $this->getJson('/api/admin/dashboard/summary?organization_id='.$beta->id)->assertOk();
+        $this->assertSame(1, $one->json('data.students'));
+        $this->assertSame(3, $one->json('data.assignments'));
+        $this->assertSame(['Beta School'], array_values(array_unique(array_column($one->json('data.by_grade_level'), 'organization_name'))));
+        $this->assertSame(['Beta School'], array_values(array_unique(array_column($one->json('data.by_subject'), 'organization_name'))));
+        $this->assertSame(['Beta School'], array_values(array_unique(array_column($one->json('data.teacher_activity'), 'organization_name'))));
+        $this->assertSame(['Beta School'], array_values(array_unique(array_column($one->json('data.hardest_paces'), 'organization_name'))));
+        $this->assertCount(1, $one->json('data.recent_students'));
+        $this->assertCount(1, $one->json('data.recent_users') === null ? [] : array_filter($one->json('data.recent_users'), fn (array $user) => ($user['organization']['name'] ?? null) === 'Beta School' && $user['role'] === 'teacher'));
     }
 
     public function test_the_students_list_can_be_filtered_by_branch(): void
@@ -134,12 +224,13 @@ class AdminScopeTest extends ApiTestCase
         $this->assertSame([$fromNorth->id], $ids('?branch_id='.$north->id));
         $this->assertSame([$fromMain->id], $ids('?branch_id='.$main->id));
 
-        // Combines with the other filters, and a student's row names the teacher's branch.
+        // Combines with the other filters, and a student's row names the section's branch.
         $this->assertSame([], $ids('?branch_id='.$north->id.'&teacher_id='.$teacherA->id));
         $this->assertSame([$fromNorth->id], $ids('?branch_id='.$north->id.'&search=noah'));
 
         $this->getJson('/api/admin/students?branch_id='.$north->id)
-            ->assertJsonPath('data.0.creator.branch_name', 'North');
+            ->assertJsonPath('data.0.section.grade_level.branch.name', 'North')
+            ->assertJsonPath('data.0.registered_by.id', $teacherB->id);
 
         // A branch of another school matches nothing.
         $foreign = Branch::factory()->create(['organization_id' => $this->organization()->id, 'name' => 'Elsewhere']);
@@ -195,12 +286,13 @@ class AdminScopeTest extends ApiTestCase
             ->assertJsonValidationErrors(['pace_id']);
     }
 
-    public function test_an_admin_can_open_a_teachers_grade_level_and_subject_read_only(): void
+    public function test_an_admin_can_open_a_teachers_grade_level_section_and_subject_read_only(): void
     {
         $organization = $this->organization();
         $admin = $this->admin($organization);
         $teacher = $this->teacher($organization);
         $grade = $this->gradeLevel('Grade 3', $teacher, ['Math', 'English']);
+        $section = $this->section($grade, $teacher);
         $math = $this->subject($grade, 'Math');
         $student = $this->student(['grade_level_id' => $grade->id], $teacher);
         $this->assignment(['student_id' => $student->id, 'subject_id' => $math->id], $teacher);
@@ -213,19 +305,35 @@ class AdminScopeTest extends ApiTestCase
         $this->getJson('/api/admin/grade-levels/'.$grade->id)
             ->assertOk()
             ->assertJsonPath('data.id', $grade->id)
-            ->assertJsonPath('data.user_id', $teacher->id)
+            ->assertJsonPath('data.branch.id', $teacher->branch_id)
+            ->assertJsonPath('data.branch.organization.name', $teacher->organization->name)
+            ->assertJsonPath('data.created_by', $teacher->id)
             ->assertJsonCount(2, 'data.subjects')
+            ->assertJsonCount(1, 'data.sections')
+            ->assertJsonPath('data.sections.0.teaching_assignments.0.teacher.id', $teacher->id)
             ->assertJsonCount(1, 'data.assignments')
             ->assertJsonPath('data.assignments.0.student.id', $student->id);
+
+        $this->getJson('/api/admin/sections/'.$section->id)
+            ->assertOk()
+            ->assertJsonPath('data.id', $section->id)
+            ->assertJsonPath('data.grade_level.id', $grade->id)
+            // The page names the school above the grade level and section.
+            ->assertJsonPath('data.grade_level.branch.organization.id', $teacher->organization_id)
+            ->assertJsonPath('data.grade_level.branch.organization.name', $teacher->organization->name)
+            ->assertJsonCount(1, 'data.students')
+            ->assertJsonCount(2, 'data.teaching_assignments');
 
         $this->getJson('/api/admin/subjects/'.$math->id)
             ->assertOk()
             ->assertJsonPath('data.id', $math->id)
             ->assertJsonPath('data.grade_level.id', $grade->id)
+            ->assertJsonPath('data.grade_level.branch.organization.name', $teacher->organization->name)
             ->assertJsonCount(1, 'data.assignments');
 
-        // Another school's grade level and subject are out of reach.
+        // Another school's grade level, section and subject are out of reach.
         $this->getJson('/api/admin/grade-levels/'.$foreignGrade->id)->assertNotFound();
+        $this->getJson('/api/admin/sections/'.$this->section($foreignGrade, $stranger)->id)->assertNotFound();
         $this->getJson('/api/admin/subjects/'.$this->subject($foreignGrade, 'Math')->id)->assertNotFound();
 
         // The platform staff see them all.
@@ -280,12 +388,12 @@ class AdminScopeTest extends ApiTestCase
         $this->assertSame(1, $counts[$main->id]);
         $this->assertSame(2, $counts[$north->id]);
 
-        // A student's detail names the teacher's school and branch.
+        // A student's detail names the section's branch and who registered them.
         $student = $this->student([], $teacherB);
         $this->getJson('/api/admin/students/'.$student->id)
             ->assertOk()
-            ->assertJsonPath('data.creator.organization_name', $organization->name)
-            ->assertJsonPath('data.creator.branch_name', 'North');
+            ->assertJsonPath('data.section.grade_level.branch.name', 'North')
+            ->assertJsonPath('data.registered_by.id', $teacherB->id);
     }
 
     public function test_role_labels_follow_the_platform_naming(): void

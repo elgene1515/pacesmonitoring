@@ -6,9 +6,10 @@ import OwnerService from '../../../services/OwnerService';
 import { ROLE_LABELS } from '../../../models';
 import { useScopeStore } from '../../../stores/scope';
 import { notify } from '../../../stores/notifications';
-import { elapsed, formatDate, pluralize, timeAgo } from '../../../core/format';
+import { elapsed, formatDate, pluralize, timeAgo, toIsoDate } from '../../../core/format';
 import AppField from '../../ui/AppField.vue';
 import AppModal from '../../ui/AppModal.vue';
+import JoinRequestsPanel from '../../admin/JoinRequestsPanel.vue';
 import EmptyState from '../../ui/EmptyState.vue';
 import PasswordField from '../../ui/PasswordField.vue';
 import AppIcon from '../../ui/AppIcon.vue';
@@ -71,13 +72,56 @@ function pickOrganization(organization) {
     scope.select(organization.id, organization.name);
 }
 
+/* ---------- plan requests waiting (every one, not just the oldest few) ---------- */
+
+const planRequests = ref([]);
+
+/** Search by organization name and the day the request was sent (either end of the range may be left open). */
+const planFilters = reactive({ search: '', from: '', to: '' });
+
+const hasPlanFilters = computed(() => planFilters.search.trim() !== '' || planFilters.from !== '' || planFilters.to !== '');
+
+const visiblePlanRequests = computed(() => {
+    const term = planFilters.search.trim().toLowerCase();
+
+    return planRequests.value.filter((request) => {
+        if (term !== '' && !String(request.organizationName ?? '').toLowerCase().includes(term)) {
+            return false;
+        }
+
+        const day = toIsoDate(request.createdAt);
+
+        return (planFilters.from === '' || (day !== '' && day >= planFilters.from))
+            && (planFilters.to === '' || (day !== '' && day <= planFilters.to));
+    });
+});
+
+const planEmptyMessage = computed(() => (hasPlanFilters.value ? 'No plan requests match your filters.' : 'No plan requests waiting.'));
+
+function clearPlanFilters() {
+    planFilters.search = '';
+    planFilters.from = '';
+    planFilters.to = '';
+}
+
+async function loadPlanRequests() {
+    try {
+        planRequests.value = (await ownerService.listPlanRequests({ status: 'pending' }))
+            .slice()
+            .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+    } catch {
+        planRequests.value = summary.value.pendingPlanRequests;
+    }
+}
+
 async function load({ silent = false } = {}) {
     if (!silent) {
         loading.value = true;
     }
 
     try {
-        summary.value = await ownerService.getDashboardSummary();
+        const [dashboard] = await Promise.all([ownerService.getDashboardSummary(), loadPlanRequests()]);
+        summary.value = dashboard;
     } catch (err) {
         notify.error(err?.message ?? 'Failed to load the dashboard.');
     } finally {
@@ -356,9 +400,20 @@ onBeforeUnmount(() => {
                 Plan requests waiting for you
                 <span class="muted fails-note">({{ pluralize(summary.totals.pendingPlanRequests, 'request') }})</span>
             </h2>
-            <p class="muted card-hint">Schools asking to subscribe, change plan or cancel. Open the organization to approve or decline.</p>
+            <p class="muted card-hint">Schools asking to subscribe, change plan or cancel, oldest first. Open the organization to approve or decline.</p>
+            <div v-if="!loading && planRequests.length > 0" class="plan-filters">
+                <input v-model="planFilters.search" class="input plan-search" type="search" placeholder="Search by organization name" aria-label="Search plan requests by organization" />
+                <div class="date-range" role="group" aria-label="Filter by request date">
+                    <span class="muted date-range-label">Sent</span>
+                    <input v-model="planFilters.from" class="input date-input" type="date" :max="planFilters.to || undefined" aria-label="Sent from" />
+                    <span class="muted" aria-hidden="true">–</span>
+                    <input v-model="planFilters.to" class="input date-input" type="date" :min="planFilters.from || undefined" aria-label="Sent to" />
+                </div>
+                <button v-if="hasPlanFilters" type="button" class="btn btn-link btn-sm" @click="clearPlanFilters">Clear</button>
+                <span class="muted count nowrap">{{ hasPlanFilters ? `${visiblePlanRequests.length} of ${planRequests.length}` : pluralize(planRequests.length, 'request') }}</span>
+            </div>
             <p v-if="loading" class="muted">Loading…</p>
-            <EmptyState v-else-if="summary.pendingPlanRequests.length === 0" compact message="No plan requests waiting." />
+            <EmptyState v-else-if="visiblePlanRequests.length === 0" compact :message="planEmptyMessage" />
             <table v-else class="table">
                 <thead>
                     <tr>
@@ -371,7 +426,7 @@ onBeforeUnmount(() => {
                     </tr>
                 </thead>
                 <tbody>
-                    <tr v-for="request in summary.pendingPlanRequests" :key="request.id">
+                    <tr v-for="request in visiblePlanRequests" :key="request.id">
                         <td class="ellipsis">
                             <RouterLink :to="{ name: 'owner-organization-detail', params: { id: request.organizationId } }">{{ request.organizationName }}</RouterLink>
                         </td>
@@ -387,35 +442,9 @@ onBeforeUnmount(() => {
             </table>
         </section>
 
-        <section class="card">
-            <h2 class="card-title">
-                Pending join requests
-                <span class="muted fails-note">({{ pluralize(summary.totals.pendingJoinRequests, 'request') }} waiting across every organization)</span>
-            </h2>
-            <p class="muted card-hint">Teachers waiting for a school administrator to admit them, oldest first. Admins decide these from their Organization page.</p>
-            <p v-if="loading" class="muted">Loading…</p>
-            <EmptyState v-else-if="summary.pendingJoinRequests.length === 0" compact message="No pending requests." />
-            <table v-else class="table">
-                <thead>
-                    <tr>
-                        <th>Teacher</th>
-                        <th>Organization</th>
-                        <th>Branch</th>
-                        <th>Requested</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr v-for="request in summary.pendingJoinRequests" :key="request.id">
-                        <td class="ellipsis">{{ request.userName }} <span class="muted small">{{ request.user?.email }}</span></td>
-                        <td class="ellipsis">
-                            <RouterLink :to="{ name: 'owner-organization-detail', params: { id: request.organizationId } }">{{ request.organizationName }}</RouterLink>
-                        </td>
-                        <td>{{ request.branchName || '—' }}</td>
-                        <td class="nowrap muted">{{ formatDate(request.createdAt) || '—' }}</td>
-                    </tr>
-                </tbody>
-            </table>
-        </section>
+
+        <!-- The same container as the Users page, for every school at once; the search also finds a school by name, and there is a branch dropdown. -->
+        <JoinRequestsPanel search-school branch-filter @decided="load({ silent: true })" />
 
         <section class="card unassigned" aria-labelledby="unassigned-title">
             <h2 id="unassigned-title" class="card-title">
@@ -555,6 +584,39 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* Plan request filters: organization name and the sent-date range. */
+.plan-filters {
+    display: flex;
+    align-items: center;
+    gap: 8px 12px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+
+.plan-filters .input {
+    width: auto;
+}
+
+.plan-search {
+    flex: 1 1 200px;
+    max-width: 280px;
+}
+
+.plan-filters .date-range {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.plan-filters .date-range-label {
+    font-size: 0.9rem;
+}
+
+.plan-filters .date-input {
+    width: 140px;
+}
+
 .owner-home {
     display: flex;
     flex-direction: column;

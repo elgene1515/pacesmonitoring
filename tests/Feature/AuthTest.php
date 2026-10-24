@@ -10,7 +10,10 @@ class AuthTest extends ApiTestCase
     public function test_a_visitor_can_register_and_is_logged_in(): void
     {
         $response = $this->postJson('/api/register', [
-            'name' => 'Jane Teacher',
+            'first_name' => 'Jane',
+            'last_name' => 'Teacher',
+            'phone' => '0917 123 4567',
+            'terms' => true,
             'email' => 'jane@example.com',
             'password' => 'secret-password',
             'password_confirmation' => 'secret-password',
@@ -39,14 +42,17 @@ class AuthTest extends ApiTestCase
         User::factory()->create(['email' => 'taken@example.com']);
 
         $this->postJson('/api/register', [
-            'name' => '',
+            'first_name' => '',
+            'last_name' => '',
+            'phone' => '0917 123 4567',
+            'terms' => true,
             'email' => 'taken@example.com',
             'password' => 'short',
             'password_confirmation' => 'different',
             'role' => 'teacher',
         ])
             ->assertUnprocessable()
-            ->assertJsonValidationErrors(['name', 'email', 'password']);
+            ->assertJsonValidationErrors(['first_name', 'last_name', 'email', 'password']);
 
         $this->assertGuest('web');
     }
@@ -216,7 +222,7 @@ class AuthTest extends ApiTestCase
     {
         $user = $this->signIn();
 
-        $this->putJson('/api/profile', ['name' => 'New Name', 'email' => 'new-email@example.com', 'current_password' => 'password'])
+        $this->putJson('/api/profile', ['first_name' => 'New', 'last_name' => 'Name', 'phone' => '0917 123 4567', 'email' => 'new-email@example.com', 'current_password' => 'password'])
             ->assertOk()
             ->assertJsonPath('data.id', $user->id)
             ->assertJsonPath('data.name', 'New Name')
@@ -234,11 +240,11 @@ class AuthTest extends ApiTestCase
         $this->signIn();
         $other = User::factory()->create(['email' => 'taken@example.com']);
 
-        $this->putJson('/api/profile', ['name' => '', 'email' => 'not-an-email'])
+        $this->putJson('/api/profile', ['first_name' => '', 'last_name' => '', 'phone' => '0917 123 4567', 'email' => 'not-an-email'])
             ->assertUnprocessable()
-            ->assertJsonValidationErrors(['name', 'email', 'current_password']);
+            ->assertJsonValidationErrors(['first_name', 'last_name', 'email', 'current_password']);
 
-        $this->putJson('/api/profile', ['name' => 'Someone', 'email' => $other->email, 'current_password' => 'password'])
+        $this->putJson('/api/profile', ['first_name' => 'Someone', 'last_name' => 'Tester', 'phone' => '0917 123 4567', 'email' => $other->email, 'current_password' => 'password'])
             ->assertUnprocessable()
             ->assertJsonValidationErrors(['email']);
     }
@@ -247,7 +253,7 @@ class AuthTest extends ApiTestCase
     {
         $user = $this->signIn(User::factory()->create(['name' => 'Original', 'email' => 'me@example.com']));
 
-        $this->putJson('/api/profile', ['name' => 'Hijacked', 'email' => 'attacker@example.com', 'current_password' => 'wrong-password'])
+        $this->putJson('/api/profile', ['first_name' => 'Hijacked', 'last_name' => 'Tester', 'phone' => '0917 123 4567', 'email' => 'attacker@example.com', 'current_password' => 'wrong-password'])
             ->assertUnprocessable()
             ->assertJsonPath('errors.current_password.0', 'The current password is incorrect.');
 
@@ -258,7 +264,7 @@ class AuthTest extends ApiTestCase
     {
         $user = $this->signIn(User::factory()->create(['email' => 'me@example.com']));
 
-        $this->putJson('/api/profile', ['name' => 'Updated Name', 'email' => 'me@example.com', 'current_password' => 'password'])
+        $this->putJson('/api/profile', ['first_name' => 'Updated', 'last_name' => 'Name', 'phone' => '0917 123 4567', 'email' => 'me@example.com', 'current_password' => 'password'])
             ->assertOk()
             ->assertJsonPath('data.email', 'me@example.com');
     }
@@ -315,7 +321,7 @@ class AuthTest extends ApiTestCase
         $this->getJson('/api/subjects')->assertUnauthorized();
         $this->getJson('/api/dashboard/summary')->assertUnauthorized();
         $this->postJson('/api/logout')->assertUnauthorized();
-        $this->putJson('/api/profile', ['name' => 'X', 'email' => 'x@example.com'])->assertUnauthorized();
+        $this->putJson('/api/profile', ['first_name' => 'X', 'last_name' => 'Tester', 'phone' => '0917 123 4567', 'email' => 'x@example.com'])->assertUnauthorized();
         $this->putJson('/api/password', ['current_password' => 'x', 'password' => 'new-password', 'password_confirmation' => 'new-password'])->assertUnauthorized();
     }
 

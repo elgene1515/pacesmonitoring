@@ -1,21 +1,21 @@
 import GradeLevel from '../models/GradeLevel';
 import Subject from '../models/Subject';
+import Section from '../models/Section';
 
 /**
- * Grade levels and subjects. Every call only ever sees the signed-in user's own records.
+ * The curriculum as a teacher sees it (read-only): the grade levels, sections
+ * and subjects their teaching assignments cover, plus the whole branch
+ * curriculum for finding open slots. Admins set the curriculum up through
+ * AdminService.
  *
- *  gradeLevels()                 GET    /api/grade-levels               -> GradeLevel[] (each with subjects)
- *  gradeLevel(id)                GET    /api/grade-levels/{id}          -> GradeLevel (with subjects, assignments[student, subject, pace])
- *  subjects(gradeLevelId?)       GET    /api/subjects?grade_level_id=   -> Subject[]
- *  subject(id)                   GET    /api/subjects/{id}              -> Subject (with gradeLevel, assignments[student, pace])
- *  createGradeLevel(payload)     POST   /api/grade-levels               -> GradeLevel
- *  updateGradeLevel(id, payload) PUT    /api/grade-levels/{id}          -> GradeLevel
- *  removeGradeLevel(id)          DELETE /api/grade-levels/{id}
- *  createSubject(payload)        POST   /api/subjects                   -> Subject   payload: { grade_level_id, name, sort_order? }
- *  updateSubject(id, payload)    PUT    /api/subjects/{id}              -> Subject   payload: { name, sort_order? }
- *  removeSubject(id)             DELETE /api/subjects/{id}
- *
- * Payloads may be model instances (with toPayload) or plain snake_case objects.
+ *  curriculum(schoolYearId?)     GET /api/curriculum?school_year_id=       -> GradeLevel[] (the branch's, each with subjects and
+ *                                                                              sections[teaching_assignments.teacher])
+ *  gradeLevels(schoolYearId?)    GET /api/grade-levels?school_year_id=     -> GradeLevel[] (the ones the teacher teaches in; subjects, my sections)
+ *  gradeLevel(id)                GET /api/grade-levels/{id}                -> GradeLevel (with subjects, sections, assignments[student, subject, pace])
+ *  subjects(gradeLevelId?)       GET /api/subjects?grade_level_id=         -> Subject[] (the ones the teacher teaches, with their sections)
+ *  subject(id)                   GET /api/subjects/{id}                    -> Subject (with gradeLevel, assignments[student, pace])
+ *  sections(gradeLevelId?)       GET /api/sections?grade_level_id=         -> Section[] (the ones the teacher teaches in, with gradeLevel, teaching assignments)
+ *  section(id)                   GET /api/sections/{id}                    -> Section (with gradeLevel.subjects, teaching assignments, students)
  */
 export default class ReferenceService {
     /**
@@ -33,20 +33,30 @@ export default class ReferenceService {
         return `/subjects/${encodeURIComponent(id)}`;
     }
 
-    /** -> GradeLevel[] (each with subjects) */
-    async gradeLevels() {
-        const body = await this.api.get('/grade-levels');
+    sectionPath(id) {
+        return `/sections/${encodeURIComponent(id)}`;
+    }
+
+    /** -> GradeLevel[] the whole branch curriculum, for browsing open slots */
+    async curriculum(schoolYearId = null) {
+        const body = await this.api.get('/curriculum', { school_year_id: schoolYearId });
         return GradeLevel.collection(body?.data);
     }
 
-    /** -> GradeLevel (with its subjects and every PACE record filed under them) */
+    /** -> GradeLevel[] (the ones the teacher teaches in, each with subjects and the teacher's sections) */
+    async gradeLevels(schoolYearId = null) {
+        const body = await this.api.get('/grade-levels', { school_year_id: schoolYearId });
+        return GradeLevel.collection(body?.data);
+    }
+
+    /** -> GradeLevel (with its subjects, the teacher's sections and the PACE records filed under them) */
     async gradeLevel(id) {
         const body = await this.api.get(this.gradeLevelPath(id));
         return GradeLevel.fromJson(body?.data);
     }
 
     /** -> Subject[] */
-    async subjects(gradeLevelId) {
+    async subjects(gradeLevelId = null) {
         const body = await this.api.get('/subjects', { grade_level_id: gradeLevelId });
         return Subject.collection(body?.data);
     }
@@ -57,54 +67,15 @@ export default class ReferenceService {
         return Subject.fromJson(body?.data);
     }
 
-    /** -> GradeLevel */
-    async createGradeLevel(payload) {
-        await this.api.ensureCsrf();
-        const body = await this.api.post('/grade-levels', this.normalize(payload));
-        return GradeLevel.fromJson(body?.data);
+    /** -> Section[] the teacher's classes */
+    async sections(gradeLevelId = null) {
+        const body = await this.api.get('/sections', { grade_level_id: gradeLevelId });
+        return Section.collection(body?.data);
     }
 
-    /** -> GradeLevel */
-    async updateGradeLevel(id, payload) {
-        await this.api.ensureCsrf();
-        const body = await this.api.put(this.gradeLevelPath(id), this.normalize(payload));
-        return GradeLevel.fromJson(body?.data);
-    }
-
-    /** -> void */
-    async removeGradeLevel(id) {
-        await this.api.ensureCsrf();
-        await this.api.delete(this.gradeLevelPath(id));
-    }
-
-    /** -> Subject */
-    async createSubject(payload) {
-        await this.api.ensureCsrf();
-        const body = await this.api.post('/subjects', this.normalize(payload));
-        return Subject.fromJson(body?.data);
-    }
-
-    /** -> Subject */
-    async updateSubject(id, payload) {
-        await this.api.ensureCsrf();
-        const data = this.normalize(payload);
-        delete data.grade_level_id;
-        const body = await this.api.put(this.subjectPath(id), data);
-        return Subject.fromJson(body?.data);
-    }
-
-    /** -> void */
-    async removeSubject(id) {
-        await this.api.ensureCsrf();
-        await this.api.delete(this.subjectPath(id));
-    }
-
-    /** Accept either a model instance (with toPayload) or a plain object. */
-    normalize(payload) {
-        if (payload && typeof payload.toPayload === 'function') {
-            return payload.toPayload();
-        }
-
-        return { ...(payload ?? {}) };
+    /** -> Section (with its grade level and subjects, who teaches what, and the roster) */
+    async section(id) {
+        const body = await this.api.get(this.sectionPath(id));
+        return Section.fromJson(body?.data);
     }
 }

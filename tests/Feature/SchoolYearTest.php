@@ -153,12 +153,13 @@ class SchoolYearTest extends ApiTestCase
 
         $this->signIn($admin);
 
+        // Both teachers work in the branch's one "Grade 1", each in their own section.
         $this->getJson('/api/school-years')
             ->assertOk()
             ->assertJsonCount(1, 'data')
             ->assertJsonPath('data.0.id', $year->id)
             ->assertJsonPath('data.0.students_count', 2)
-            ->assertJsonPath('data.0.grade_levels_count', 2);
+            ->assertJsonPath('data.0.grade_levels_count', 1);
     }
 
     public function test_a_teacher_can_pick_their_own_current_school_year(): void
@@ -244,7 +245,7 @@ class SchoolYearTest extends ApiTestCase
             'birth_date' => '2015-01-01',
             'age' => 11,
             'sex' => 'female',
-            'grade_level_id' => $grade->id,
+            'section_id' => $this->section($grade)->id,
         ])
             ->assertCreated()
             ->assertJsonPath('data.school_year_id', $current->id)
@@ -283,13 +284,13 @@ class SchoolYearTest extends ApiTestCase
         $nowB = $this->student(['grade_level_id' => $grade1->id]);
         $this->student(['grade_level_id' => $grade2->id, 'school_year_id' => $old->id]);
 
-        $this->pace();
-        $this->pace();
+        $paceA = $this->pace();
+        $paceB = $this->pace();
         $this->pace();
 
-        PaceAssignment::factory()->count(2)->create(['student_id' => $nowA->id, 'school_year' => '2026-2027']);
-        PaceAssignment::factory()->tested()->create(['student_id' => $nowB->id, 'school_year' => '2026-2027']);
-        PaceAssignment::factory()->tested()->count(2)->create(['student_id' => $nowB->id, 'school_year' => '2025-2026']);
+        PaceAssignment::factory()->count(2)->create(['student_id' => $nowA->id, 'pace_id' => $paceA->id, 'school_year' => '2026-2027']);
+        PaceAssignment::factory()->tested()->create(['student_id' => $nowB->id, 'pace_id' => $paceB->id, 'school_year' => '2026-2027']);
+        PaceAssignment::factory()->tested()->count(2)->create(['student_id' => $nowB->id, 'pace_id' => $paceB->id, 'school_year' => '2025-2026']);
 
         // Default: the current school year (all three grade levels are registered under it).
         // PACEs are not tied to a school year, so the count is always the all-time total.

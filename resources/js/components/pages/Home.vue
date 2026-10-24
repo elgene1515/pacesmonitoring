@@ -10,7 +10,7 @@ import DashboardService from '../../services/DashboardService';
 import { formatDate, formatScore, pluralize } from '../../core/format';
 import { quarterLabel } from '../../core/schoolYear';
 import StudentFormModal from '../students/StudentFormModal.vue';
-import PaceFormModal from '../paces/PaceFormModal.vue';
+import BatchPaceRequestModal from '../paces/BatchPaceRequestModal.vue';
 import EmptyState from '../ui/EmptyState.vue';
 import LayeredRings from '../charts/LayeredRings.vue';
 import QuarterTiles from '../charts/QuarterTiles.vue';
@@ -26,12 +26,13 @@ const reference = useReferenceStore();
 const summary = ref(DashboardService.empty());
 const loading = ref(true);
 const studentModal = ref(false);
-const paceModal = ref(false);
+const requestModal = ref(false);
 
-/** Optional grade level / subject the figures are narrowed to ('' = all). */
+/** Optional grade level / section / subject the figures are narrowed to ('' = all). */
 const gradeLevelFilter = ref('');
+const sectionFilter = ref('');
 const subjectFilter = ref('');
-/** Optional PACE the figures are narrowed to ('' = all); the options are the teacher's own PACEs. */
+/** Optional PACE the figures are narrowed to ('' = all); the options are the branch catalog's PACEs. */
 const paceFilter = ref('');
 const paces = ref([]);
 
@@ -52,15 +53,26 @@ const gradeLevelOptions = computed(() => (
 
 const selectedGradeLevel = computed(() => reference.gradeLevelById(gradeLevelFilter.value));
 
-/** Subjects offered by the filter: the chosen grade level's, else every subject of the offered grade levels. */
+/** Sections offered by the filter: the chosen grade level's (the teacher's own sections in it). */
+const sectionOptions = computed(() => selectedGradeLevel.value?.sections ?? []);
+const selectedSection = computed(() => sectionOptions.value.find((section) => Number(section.id) === Number(sectionFilter.value)) ?? null);
+
+/**
+ * Subjects offered by the filter: the ones the teacher teaches (the figures only
+ * cover those), in the chosen section, else in the chosen grade level, else in
+ * every offered grade level.
+ */
 const subjectOptions = computed(() => {
     const levels = selectedGradeLevel.value ? [selectedGradeLevel.value] : gradeLevelOptions.value;
     const single = levels.length === 1;
+    const section = selectedSection.value;
 
-    return levels.flatMap((level) => level.subjects.map((subject) => ({
-        id: subject.id,
-        label: single ? subject.name : `${subject.name} · ${level.name}`,
-    })));
+    return levels.flatMap((level) => level.subjects
+        .filter((subject) => (section ? section.teaches(subject.id) : reference.teachesSubject(subject.id)))
+        .map((subject) => ({
+            id: subject.id,
+            label: single ? subject.name : `${subject.name} · ${level.name}`,
+        })));
 });
 
 const selectedSubjectName = computed(() => reference.subjectName(subjectFilter.value));
@@ -78,7 +90,7 @@ const subtitle = computed(() => {
         return 'Your administrator has not registered a school year yet.';
     }
 
-    const scope = [selectedGradeLevel.value?.name, selectedSubjectName.value, selectedPace.value ? `PACE ${selectedPace.value.label}` : null].filter(Boolean);
+    const scope = [selectedGradeLevel.value?.name, selectedSection.value?.name, selectedSubjectName.value, selectedPace.value ? `PACE ${selectedPace.value.label}` : null].filter(Boolean);
 
     return scope.length ? `${base} · ${scope.join(' · ')}.` : `${base}.`;
 });
@@ -86,7 +98,7 @@ const subtitle = computed(() => {
 const tiles = computed(() => [
     { key: 'students', label: 'Students', value: summary.value.students, to: { name: 'students' } },
     { key: 'paces', label: 'PACEs', value: summary.value.paces, to: { name: 'paces' } },
-    { key: 'grade-levels', label: 'Grade levels', value: summary.value.gradeLevels, to: { name: 'grade-levels' } },
+    { key: 'classes', label: 'Classes', value: summary.value.sections, to: { name: 'classes' } },
 ]);
 
 /** "SY 2026-2027" / "All school years", used as a suffix on each chart's title. */
@@ -110,9 +122,10 @@ const subjectBarItems = computed(() => summary.value.bySubject.map((subject) => 
     assigned: subject.assigned,
 })));
 
+/** One bar per grade level; with a section filter the bar says which section its students are in. */
 const gradeLevelBarItems = computed(() => summary.value.byGradeLevel.map((level) => ({
     id: level.id,
-    label: level.name,
+    label: sectionFilter.value && selectedSection.value ? `${level.name} · ${selectedSection.value.name}` : level.name,
     total: level.total,
     male: level.male,
     female: level.female,
@@ -202,7 +215,7 @@ const scoreDistributionItems = computed(() => summary.value.scoreDistribution.ma
 
 /**
  * First-run checklist, based on all-time totals (not the selected school year): shown until
- * the user has a school year, a grade level, a PACE and a student.
+ * the teacher has a school year, a class, PACEs in the catalog and a student.
  */
 const steps = computed(() => {
     const totals = summary.value.totals;
@@ -215,21 +228,21 @@ const steps = computed(() => {
             detail: 'School years are set up by your school administrator; students and PACE records are filed under one.',
         },
         {
-            key: 'grade-levels',
-            done: totals.gradeLevels > 0,
-            title: 'Create grade levels and their subjects',
-            detail: 'Students are enrolled in a grade level; PACEs are assigned under its subjects.',
+            key: 'classes',
+            done: totals.sections > 0,
+            title: 'Get your classes',
+            detail: 'Your school admin assigns the subjects you teach in each section; you can also ask for an open class.',
         },
         {
             key: 'paces',
             done: totals.paces > 0,
-            title: 'Register the PACEs you issue',
-            detail: 'Each PACE has a name and a number; register one at a time or as a range.',
+            title: 'Get PACE booklets',
+            detail: 'Your school admin keeps the branch catalog and hands out booklets; ask for the ones you need.',
         },
         {
             key: 'students',
             done: totals.students > 0,
-            title: 'Add your students',
+            title: 'Enroll your students',
             detail: 'Then open a student to assign PACEs per subject, school year and quarter.',
         },
     ];
@@ -243,6 +256,7 @@ async function load() {
     try {
         summary.value = await dashboardService.summary(schoolYears.selectedId, {
             gradeLevelId: gradeLevelFilter.value || null,
+            sectionId: sectionFilter.value || null,
             subjectId: subjectFilter.value || null,
             paceId: paceFilter.value || null,
         });
@@ -262,12 +276,16 @@ function onYearChange(event) {
     schoolYears.select(event.target.value);
     // Grade levels belong to a school year, so a change clears the narrower filters.
     gradeLevelFilter.value = '';
+    sectionFilter.value = '';
     subjectFilter.value = '';
     load();
 }
 
 function onGradeLevelChange() {
     const level = selectedGradeLevel.value;
+
+    // Sections belong to the grade level.
+    sectionFilter.value = '';
 
     // Drop a subject filter that belongs to another grade level.
     if (subjectFilter.value && (!level || !level.subjectById(subjectFilter.value))) {
@@ -278,6 +296,15 @@ function onGradeLevelChange() {
 }
 
 function onSubjectChange() {
+    load();
+}
+
+/** A subject the teacher does not teach in the newly chosen section is dropped from the filter. */
+function onSectionChange() {
+    if (subjectFilter.value && !subjectOptions.value.some((option) => Number(option.id) === Number(subjectFilter.value))) {
+        subjectFilter.value = '';
+    }
+
     load();
 }
 
@@ -299,6 +326,7 @@ async function loadPaces() {
 
 function clearScope() {
     gradeLevelFilter.value = '';
+    sectionFilter.value = '';
     subjectFilter.value = '';
     paceFilter.value = '';
     load();
@@ -329,8 +357,8 @@ onMounted(() => {
                     <p class="muted subtitle">{{ subtitle }}</p>
                 </div>
                 <div class="page-actions">
-                    <button type="button" class="btn" @click="studentModal = true">Add student</button>
-                    <button type="button" class="btn btn-secondary" @click="paceModal = true">Register PACE</button>
+                    <button type="button" class="btn" :disabled="!auth.canWrite" @click="studentModal = true">Enroll student</button>
+                    <button type="button" class="btn btn-secondary" :disabled="!auth.canWrite" @click="requestModal = true">Request Stock</button>
                 </div>
             </div>
 
@@ -362,6 +390,13 @@ onMounted(() => {
                         </select>
                     </label>
                     <label v-if="reference.hasGradeLevels" class="year">
+                        <span class="muted">Section</span>
+                        <select v-model="sectionFilter" class="input" aria-label="Section" :disabled="loading || !gradeLevelFilter" @change="onSectionChange">
+                            <option value="">{{ gradeLevelFilter ? 'All sections' : 'Select a grade level first' }}</option>
+                            <option v-for="section in sectionOptions" :key="section.id" :value="section.id">{{ section.name }}</option>
+                        </select>
+                    </label>
+                    <label v-if="reference.hasGradeLevels" class="year">
                         <span class="muted">Subject</span>
                         <select v-model="subjectFilter" class="input" aria-label="Subject" :disabled="loading || subjectOptions.length === 0" @change="onSubjectChange">
                             <option value="">All subjects</option>
@@ -375,7 +410,7 @@ onMounted(() => {
                             <option v-for="pace in paces" :key="pace.id" :value="pace.id">{{ pace.label }}</option>
                         </select>
                     </label>
-                    <button v-if="gradeLevelFilter || subjectFilter || paceFilter" type="button" class="btn btn-link btn-sm" :disabled="loading" @click="clearScope">
+                    <button v-if="gradeLevelFilter || sectionFilter || subjectFilter || paceFilter" type="button" class="btn btn-link btn-sm" :disabled="loading" @click="clearScope">
                         Clear
                     </button>
                 </div>
@@ -436,14 +471,14 @@ onMounted(() => {
                         <RouterLink v-if="step.key === 'school-years' && !step.done" :to="{ name: 'school-years' }" class="btn btn-secondary btn-sm">
                             School years
                         </RouterLink>
-                        <RouterLink v-else-if="step.key === 'grade-levels' && !step.done" :to="{ name: 'grade-levels' }" class="btn btn-secondary btn-sm">
-                            Grade levels
+                        <RouterLink v-else-if="step.key === 'classes' && !step.done" :to="{ name: 'teaching-requests' }" class="btn btn-secondary btn-sm">
+                            Request a class
                         </RouterLink>
-                        <button v-else-if="step.key === 'paces' && !step.done" type="button" class="btn btn-secondary btn-sm" @click="paceModal = true">
-                            Register PACE
+                        <button v-else-if="step.key === 'paces' && !step.done" type="button" class="btn btn-secondary btn-sm" :disabled="!auth.canWrite" @click="requestModal = true">
+                            Request Stock
                         </button>
-                        <button v-else-if="step.key === 'students' && !step.done" type="button" class="btn btn-secondary btn-sm" @click="studentModal = true">
-                            Add student
+                        <button v-else-if="step.key === 'students' && !step.done" type="button" class="btn btn-secondary btn-sm" :disabled="!auth.canWrite" @click="studentModal = true">
+                            Enroll student
                         </button>
                         <span v-else class="muted step-done">Done</span>
                     </div>
@@ -480,21 +515,22 @@ onMounted(() => {
             <QuarterTiles :rows="summary.byQuarter" />
         </section>
 
-        <!-- A breakdown narrowed to a single subject / grade level would be one bar, so that card is hidden. -->
-        <div v-if="!loading && (!subjectFilter || !gradeLevelFilter)" :class="{ 'grid-2 pair': !subjectFilter && !gradeLevelFilter }">
+        <!-- The subject breakdown would be one bar under a subject filter, so it hides; the grade level card always shows. -->
+        <div v-if="!loading" :class="{ 'grid-2 pair': !subjectFilter }">
             <section v-if="!subjectFilter" class="card">
                 <h2 class="card-title">PACEs by subject · {{ periodLabel }}</h2>
                 <StackedBarList :items="subjectBarItems" empty-message="No PACEs assigned yet." scrollable />
             </section>
 
-            <section v-if="!gradeLevelFilter" class="card">
+            <section class="card">
                 <h2 class="card-title">Students by grade level · {{ periodLabel }}</h2>
                 <SexBarChart :items="gradeLevelBarItems" empty-message="No grade levels yet." />
             </section>
         </div>
 
         <StudentFormModal v-model="studentModal" @saved="load" />
-        <PaceFormModal v-model="paceModal" @saved="load" />
+        <!-- The same Request Stock dialog as on the PACEs page (one or several PACEs at once). -->
+        <BatchPaceRequestModal v-model="requestModal" />
     </div>
 </template>
 

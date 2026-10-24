@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Organization;
+use App\Models\PaceAssignment;
 use App\Models\SchoolYear;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
@@ -140,7 +141,8 @@ class SchoolYearService
     }
 
     /**
-     * withCount() spec for students and grade levels, limited to one teacher's when given.
+     * withCount() spec for students and grade levels: organization-wide, or
+     * limited to the sections a teacher teaches in when given.
      *
      * @return array<int|string, mixed>
      */
@@ -151,8 +153,8 @@ class SchoolYearService
         }
 
         return [
-            'students' => fn (Builder $query) => $query->where('students.created_by', $owner->id),
-            'gradeLevels' => fn (Builder $query) => $query->where('grade_levels.user_id', $owner->id),
+            'students' => fn (Builder $query) => $query->ownedBy($owner),
+            'gradeLevels' => fn (Builder $query) => $query->ownedBy($owner),
         ];
     }
 
@@ -179,22 +181,21 @@ class SchoolYearService
     }
 
     /**
-     * Count the PACE records per school-year label in one query: one teacher's
-     * records, or those of every teacher in the organization.
+     * Count the PACE records per school-year label in one query: the records
+     * one teacher is in charge of, or every record of the organization.
      *
      * @param  \Illuminate\Database\Eloquent\Collection<int, \App\Models\SchoolYear>  $years
      */
     protected function attachAssignmentCounts(Collection $years, ?int $organizationId, ?User $owner): void
     {
-        $query = DB::table('pace_assignments')
-            ->join('students', 'students.id', '=', 'pace_assignments.student_id')
+        $query = PaceAssignment::query()
             ->groupBy('pace_assignments.school_year')
             ->selectRaw('pace_assignments.school_year as name, COUNT(*) as total');
 
         if ($owner !== null) {
-            $query->where('students.created_by', $owner->id);
+            $query->ownedBy($owner);
         } else {
-            $query->whereIn('students.created_by', User::query()->inOrganization($organizationId)->select('id'));
+            $query->forOrganization($organizationId);
         }
 
         $counts = $query->pluck('total', 'name');

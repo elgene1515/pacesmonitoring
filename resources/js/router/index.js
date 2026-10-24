@@ -14,6 +14,9 @@ const Home = () => import('../components/pages/Home.vue');
 const GradeLevels = () => import('../components/pages/GradeLevels.vue');
 const GradeLevelDetail = () => import('../components/pages/GradeLevelDetail.vue');
 const SubjectDetail = () => import('../components/pages/SubjectDetail.vue');
+const SectionDetail = () => import('../components/pages/SectionDetail.vue');
+const TeachingRequests = () => import('../components/pages/TeachingRequests.vue');
+const StudentChangeRequests = () => import('../components/pages/StudentChangeRequests.vue');
 const SchoolYears = () => import('../components/pages/SchoolYears.vue');
 const Students = () => import('../components/pages/Students.vue');
 const StudentDetail = () => import('../components/pages/StudentDetail.vue');
@@ -26,6 +29,9 @@ const AdminUsers = () => import('../components/pages/admin/AdminUsers.vue');
 const AdminUserDetail = () => import('../components/pages/admin/AdminUserDetail.vue');
 const AdminStudents = () => import('../components/pages/admin/AdminStudents.vue');
 const AdminStudentDetail = () => import('../components/pages/admin/AdminStudentDetail.vue');
+const AdminStudentChangeRequests = () => import('../components/pages/admin/AdminStudentChangeRequests.vue');
+const AdminGradeLevels = () => import('../components/pages/admin/AdminGradeLevels.vue');
+const AdminPaces = () => import('../components/pages/admin/AdminPaces.vue');
 const AdminPaceDetail = () => import('../components/pages/admin/AdminPaceDetail.vue');
 const AdminPaceRequests = () => import('../components/pages/admin/AdminPaceRequests.vue');
 const AdminOrganization = () => import('../components/pages/admin/AdminOrganization.vue');
@@ -42,7 +48,7 @@ const numericId = (route) => ({ id: Number(route.params.id) });
 |  guest          only for visitors (signed-in users are sent to their home)
 |  requiresAuth   must be signed in
 |  setup          onboarding pages for users without an organization yet
-|  teacherOnly    the teacher area (own records)
+|  teacherOnly    the teacher area (what their teaching assignments cover)
 |  requiresAdmin  the admin area (organization admins and the owner)
 |  requiresOwner  the platform area (owner and vice admins)
 |  ownerOnly      the owner alone (staff management)
@@ -61,6 +67,7 @@ export const routes = [
         component: Register,
         meta: { guest: true, title: 'Create account', hideNav: true },
     },
+
     {
         path: '/forgot-password',
         name: 'forgot-password',
@@ -105,21 +112,39 @@ export const routes = [
         meta: { requiresAuth: true, title: 'Home', teacherOnly: true },
     },
     {
-        path: '/grade-levels',
-        name: 'grade-levels',
+        path: '/classes',
+        name: 'classes',
         component: GradeLevels,
-        meta: { requiresAuth: true, title: 'Grade levels', teacherOnly: true },
+        meta: { requiresAuth: true, title: 'My classes', teacherOnly: true },
     },
     {
-        // Nested under /grade-levels so the "Grade levels" nav tab stays highlighted.
-        path: '/grade-levels/:id(\\d+)',
+        // The old address of the teacher's grade levels.
+        path: '/grade-levels',
+        redirect: { name: 'classes' },
+    },
+    {
+        // Nested under /classes so the "My classes" nav tab stays highlighted.
+        path: '/classes/requests',
+        name: 'teaching-requests',
+        component: TeachingRequests,
+        meta: { requiresAuth: true, title: 'Class requests', teacherOnly: true },
+    },
+    {
+        path: '/classes/grade-levels/:id(\\d+)',
         name: 'grade-level-detail',
         component: GradeLevelDetail,
         props: numericId,
         meta: { requiresAuth: true, title: 'Grade level', teacherOnly: true },
     },
     {
-        path: '/grade-levels/subjects/:id(\\d+)',
+        path: '/classes/sections/:id(\\d+)',
+        name: 'section-detail',
+        component: SectionDetail,
+        props: numericId,
+        meta: { requiresAuth: true, title: 'Section', teacherOnly: true },
+    },
+    {
+        path: '/classes/subjects/:id(\\d+)',
         name: 'subject-detail',
         component: SubjectDetail,
         props: numericId,
@@ -136,6 +161,13 @@ export const routes = [
         name: 'students',
         component: Students,
         meta: { requiresAuth: true, title: 'Students', teacherOnly: true },
+    },
+    {
+        // Nested under /students so the "Students" nav tab stays highlighted.
+        path: '/students/changes',
+        name: 'student-change-requests',
+        component: StudentChangeRequests,
+        meta: { requiresAuth: true, title: 'Proposed changes', teacherOnly: true },
     },
     {
         path: '/students/:id(\\d+)',
@@ -196,11 +228,35 @@ export const routes = [
         meta: { requiresAuth: true, requiresAdmin: true, title: 'Admin · Students' },
     },
     {
+        path: '/admin/students/changes',
+        name: 'admin-student-change-requests',
+        component: AdminStudentChangeRequests,
+        meta: { requiresAuth: true, requiresAdmin: true, title: 'Admin · Proposed changes' },
+    },
+    {
         path: '/admin/students/:id(\\d+)',
         name: 'admin-student-detail',
         component: AdminStudentDetail,
         props: numericId,
         meta: { requiresAuth: true, requiresAdmin: true, title: 'Admin · Student' },
+    },
+    {
+        path: '/admin/paces',
+        name: 'admin-paces',
+        component: AdminPaces,
+        meta: { requiresAuth: true, requiresAdmin: true, title: 'Admin · PACEs' },
+    },
+    {
+        // Nested under /admin/paces so the "PACEs" nav tab stays highlighted.
+        path: '/admin/paces/requests',
+        name: 'admin-pace-requests',
+        component: AdminPaceRequests,
+        meta: { requiresAuth: true, requiresAdmin: true, title: 'Admin · Stock requests' },
+    },
+    {
+        // The old address of the stock requests.
+        path: '/admin/pace-requests',
+        redirect: { name: 'admin-pace-requests' },
     },
     {
         path: '/admin/paces/:id(\\d+)',
@@ -210,12 +266,13 @@ export const routes = [
         meta: { requiresAuth: true, requiresAdmin: true, title: 'Admin · PACE' },
     },
     {
-        path: '/admin/pace-requests',
-        name: 'admin-pace-requests',
-        component: AdminPaceRequests,
-        meta: { requiresAuth: true, requiresAdmin: true, title: 'Admin · PACE requests' },
+        path: '/admin/grade-levels',
+        name: 'admin-grade-levels',
+        component: AdminGradeLevels,
+        meta: { requiresAuth: true, requiresAdmin: true, title: 'Admin · Grade levels' },
     },
     {
+        // Nested under /admin/grade-levels so the "Grade Levels" nav tab stays highlighted.
         path: '/admin/grade-levels/:id(\\d+)',
         name: 'admin-grade-level-detail',
         component: GradeLevelDetail,
@@ -223,7 +280,14 @@ export const routes = [
         meta: { requiresAuth: true, requiresAdmin: true, title: 'Admin · Grade level' },
     },
     {
-        path: '/admin/subjects/:id(\\d+)',
+        path: '/admin/grade-levels/sections/:id(\\d+)',
+        name: 'admin-section-detail',
+        component: SectionDetail,
+        props: (route) => ({ id: Number(route.params.id), admin: true }),
+        meta: { requiresAuth: true, requiresAdmin: true, title: 'Admin · Section' },
+    },
+    {
+        path: '/admin/grade-levels/subjects/:id(\\d+)',
         name: 'admin-subject-detail',
         component: SubjectDetail,
         props: (route) => ({ id: Number(route.params.id), admin: true }),
@@ -348,6 +412,11 @@ router.beforeEach(async (to) => {
     // Onboarding first: until an admin has registered their school, or a teacher has been
     // admitted into one, the only pages are the setup step (and Settings).
     if (user.needsSetup) {
+        // An admin without a school may go either way: register one, or join one by its code.
+        if (user.mayJoinByCode && (to.name === 'setup-join' || to.name === 'setup-organization')) {
+            return true;
+        }
+
         if (to.meta.setup || to.name === 'settings') {
             const expected = homeRouteFor(user);
             return to.meta.setup && to.name !== expected.name ? expected : true;

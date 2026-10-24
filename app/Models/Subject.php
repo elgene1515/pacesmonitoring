@@ -7,8 +7,12 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
+/**
+ * A subject of a grade level, shared by every section of that grade level.
+ */
 class Subject extends Model
 {
     use HasFactory, OwnedByUser;
@@ -35,14 +39,16 @@ class Subject extends Model
     ];
 
     /**
-     * Only subjects under grade levels created by the given user.
+     * Only subjects the given teacher is assigned to teach (in any section).
      *
      * @param  \Illuminate\Database\Eloquent\Builder<\App\Models\Subject>  $query
      * @return \Illuminate\Database\Eloquent\Builder<\App\Models\Subject>
      */
     public function scopeOwnedBy(Builder $query, User|int $user): Builder
     {
-        return $query->whereHas('gradeLevel', fn (Builder $level) => $level->ownedBy($user));
+        $id = $user instanceof User ? $user->getKey() : $user;
+
+        return $query->whereHas('teachingAssignments', fn (Builder $assignment) => $assignment->where('teacher_id', $id));
     }
 
     /**
@@ -51,6 +57,30 @@ class Subject extends Model
     public function gradeLevel(): BelongsTo
     {
         return $this->belongsTo(GradeLevel::class);
+    }
+
+    /**
+     * Who teaches this subject, per section.
+     */
+    public function teachingAssignments(): HasMany
+    {
+        return $this->hasMany(TeachingAssignment::class);
+    }
+
+    /**
+     * The sections that offer this subject.
+     */
+    public function sections(): BelongsToMany
+    {
+        return $this->belongsToMany(Section::class, 'section_subjects')->withTimestamps();
+    }
+
+    /**
+     * The students who take this subject.
+     */
+    public function students(): BelongsToMany
+    {
+        return $this->belongsToMany(Student::class, 'student_subjects')->withTimestamps();
     }
 
     /**

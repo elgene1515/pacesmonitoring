@@ -3,7 +3,12 @@
 namespace App\Http\Requests\Pace;
 
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
+/**
+ * An admin registers a run of PACE numbers in a branch's catalog, all with
+ * one name. Numbers already there under that name are skipped.
+ */
 class StorePaceRangeRequest extends FormRequest
 {
     /**
@@ -11,53 +16,56 @@ class StorePaceRangeRequest extends FormRequest
      */
     public const MAX_RANGE_SIZE = 500;
 
-    /**
-     * Determine if the user is authorized to make this request.
-     */
     public function authorize(): bool
     {
         return true;
     }
 
     /**
-     * Get the validation rules that apply to the request.
-     *
      * @return array<string, mixed>
      */
     public function rules(): array
     {
         return [
+            'branch_id' => ['required', 'integer', Rule::exists('branches', 'id')],
             'name' => ['required', 'string', 'max:255'],
             'start' => ['required', 'digits_between:1,50'],
             'end' => ['required', 'digits_between:1,50', 'gte:start', $this->rangeSize()],
-            'stock' => ['nullable', 'integer', 'min:0', 'max:1000000'],
+            'pool_stock' => ['nullable', 'integer', 'min:0', 'max:1000000'],
         ];
     }
 
     /**
-     * Custom validation messages.
-     *
      * @return array<string, string>
      */
     public function messages(): array
     {
         return [
+            'branch_id.required' => 'Please select the branch whose catalog these PACEs go in.',
+            'branch_id.exists' => 'The selected branch is invalid.',
             'start.digits_between' => 'The start number must contain digits only.',
             'end.digits_between' => 'The end number must contain digits only.',
             'end.gte' => 'The end number must not be less than the start number.',
-            'stock.min' => 'The stock cannot be negative.',
+            'pool_stock.min' => 'The stock cannot be negative.',
         ];
     }
 
     /**
-     * The validated attributes needed to register the range.
-     *
+     * @return array<string, string>
+     */
+    public function attributes(): array
+    {
+        return ['branch_id' => 'branch', 'pool_stock' => 'stock'];
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function rangeData(): array
     {
-        $data = $this->safe()->only(['name', 'start', 'end', 'stock']);
-        $data['stock'] = isset($data['stock']) ? (int) $data['stock'] : 0;
+        $data = $this->safe()->only(['name', 'start', 'end', 'pool_stock']);
+        $data['name'] = trim((string) $data['name']);
+        $data['pool_stock'] = isset($data['pool_stock']) ? (int) $data['pool_stock'] : 0;
 
         return $data;
     }

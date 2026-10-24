@@ -1,6 +1,10 @@
 import GradeLevel from './GradeLevel';
+import Section from './Section';
 import SchoolYear from './SchoolYear';
 import PaceAssignment from './PaceAssignment';
+import Subject from './Subject';
+import StudentEnrollment from './StudentEnrollment';
+import { STUDENT_DETAIL_FIELDS, cleanDetail } from './studentDetails';
 import { ageFromBirthDate, capitalize } from '../core/format';
 
 export const SEX_OPTIONS = Object.freeze([
@@ -9,11 +13,14 @@ export const SEX_OPTIONS = Object.freeze([
 ]);
 
 /**
- * Student record.
+ * A student enrolled in one section, shared by every teacher of that section.
  *
- * API shape: {id, first_name, middle_name, last_name, extension, full_name, birth_date (Y-m-d), age, sex,
- *             grade_level_id, grade_level?, school_year_id, school_year?, assignments_count?, assignments?,
- *             creator?: {id, name, email}, created_at, updated_at}
+ * API shape: {id, student_number, first_name, middle_name, last_name, extension, full_name, birth_date (Y-m-d), age, sex,
+ *             email, mobile, address, guardian_name, guardian_relationship, guardian_phone, guardian_email,
+ *             blood_type, medical_notes,
+ *             section_id, section?, grade_level_id, grade_level?, school_year_id, school_year?, subjects?,
+ *             assignments_count?, tested_count?, issued_count?, assigned_count?, average_score?, assignments?,
+ *             enrollments?: [], registered_by?: {id, name, email}, created_at, updated_at}
  */
 export default class Student {
     constructor({
@@ -25,27 +32,34 @@ export default class Student {
         birthDate = '',
         age = null,
         sex = '',
+        sectionId = null,
+        section = null,
         gradeLevelId = null,
         gradeLevel = null,
         schoolYearId = null,
         schoolYear = null,
+        subjects = null,
         assignmentsCount = null,
         testedCount = null,
         issuedCount = null,
         assignedCount = null,
         averageScore = null,
         assignments = [],
-        creator = null,
+        enrollments = [],
+        registeredBy = null,
         createdAt = null,
         updatedAt = null,
+        ...details
     } = {}) {
-        /** Of assignmentsCount, how many are tested / issued-only / assigned-only, when the API included the breakdown. */
-        this.testedCount = testedCount;
-        this.issuedCount = issuedCount;
-        this.assignedCount = assignedCount;
-        /** Average score across every record (unscored PACEs as 0), when the API included it; null without records. */
-        this.averageScore = averageScore;
         this.id = id;
+        /*
+         * Optional details (see studentDetails.js): studentNumber, email, mobile, address,
+         * guardianName, guardianRelationship, guardianPhone, guardianEmail, bloodType, medicalNotes ('' when unset).
+         */
+        for (const field of STUDENT_DETAIL_FIELDS) {
+            this[field.prop] = details[field.prop] ?? '';
+        }
+
         this.firstName = firstName;
         this.middleName = middleName;
         this.lastName = lastName;
@@ -55,35 +69,55 @@ export default class Student {
         this.age = age;
         /** 'male' | 'female' */
         this.sex = sex;
+        /** The section (class) the student is enrolled in. */
+        this.sectionId = sectionId;
+        /** @type {Section|null} */
+        this.section = section;
+        /** The section's grade level. */
         this.gradeLevelId = gradeLevelId;
         /** @type {GradeLevel|null} */
         this.gradeLevel = gradeLevel;
-        /** School year the student was registered in (null when none was recorded). */
+        /** School year the student was registered in (the section's grade level's). */
         this.schoolYearId = schoolYearId;
         /** @type {SchoolYear|null} */
         this.schoolYear = schoolYear;
-        /** Number of assignments, when the API included the count; otherwise null. */
+        /** @type {Subject[]|null} the subjects the student takes (each student has their own list); null when not loaded */
+        this.subjects = subjects;
+        /** Number of records in the enrolled school year, when the API included the count; otherwise null. */
         this.assignmentsCount = assignmentsCount;
+        /** Of assignmentsCount, how many are tested / issued-only / assigned-only. */
+        this.testedCount = testedCount;
+        this.issuedCount = issuedCount;
+        this.assignedCount = assignedCount;
+        /** Average score across every record of the enrolled year (unscored PACEs as 0); null without records. */
+        this.averageScore = averageScore;
+        /** @type {StudentEnrollment[]} where the student has been enrolled, latest first (detail endpoint) */
+        this.enrollments = enrollments;
         /** @type {PaceAssignment[]} */
         this.assignments = assignments;
-        /** The teacher who registered this student (only present on admin endpoints). */
-        this.creator = creator;
+        /** Who registered the student ({id, name, email}), an audit detail (admin endpoints). */
+        this.registeredBy = registeredBy;
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
     }
 
-    /** The owning teacher's name, when loaded (admin views only). */
-    get creatorName() {
-        return this.creator?.name ?? '';
+    /** Ids of the subjects the student takes (empty when the list is not loaded). */
+    get subjectIds() {
+        return (this.subjects ?? []).map((subject) => subject.id);
     }
 
-    /** The owning teacher's school and branch, when the API included them (admin pages). */
-    get creatorOrganizationName() {
-        return this.creator?.organization_name ?? '';
+    /** True when the student takes the subject. */
+    takes(subjectId) {
+        return (this.subjects ?? []).some((subject) => subject.id === Number(subjectId));
     }
 
-    get creatorBranchName() {
-        return this.creator?.branch_name ?? '';
+    /** "English, Math, Filipino" */
+    get subjectNames() {
+        return (this.subjects ?? []).map((subject) => subject.name).join(', ');
+    }
+
+    get registeredByName() {
+        return this.registeredBy?.name ?? '';
     }
 
     /** "Last, First Middle Ext" */
@@ -108,14 +142,37 @@ export default class Student {
         return capitalize(this.sex);
     }
 
+    get sectionName() {
+        return this.section?.name ?? '';
+    }
+
     /** Grade level name when loaded, otherwise "". */
     get gradeLevelName() {
-        return this.gradeLevel?.name ?? '';
+        return this.gradeLevel?.name ?? this.section?.gradeLevelName ?? '';
+    }
+
+    /** "Grade 1 · Section 1" */
+    get classLabel() {
+        return [this.gradeLevelName, this.sectionName].filter(Boolean).join(' · ');
+    }
+
+    get branchName() {
+        return this.section?.branchName ?? this.gradeLevel?.branchName ?? '';
+    }
+
+    /** The school the student's class belongs to, when the API carried it. */
+    get organizationName() {
+        return this.section?.organizationName ?? this.gradeLevel?.organizationName ?? '';
     }
 
     /** School year label ("2026-2027") when loaded, otherwise "". */
     get schoolYearName() {
         return this.schoolYear?.name ?? '';
+    }
+
+    /** The teachers of the student's section (from the loaded section), by name. */
+    get teachers() {
+        return this.section?.teachers ?? [];
     }
 
     /** True when the record has been saved on the server. */
@@ -128,7 +185,7 @@ export default class Student {
         return ageFromBirthDate(this.birthDate);
     }
 
-    /** Snake-case body for POST /students and PUT /students/{id}. */
+    /** Snake-case body for POST /students, POST /admin/students and PUT /admin/students/{id}. */
     toPayload() {
         const clean = (value) => {
             const text = value === null || value === undefined ? '' : String(value).trim();
@@ -143,20 +200,24 @@ export default class Student {
             birth_date: this.birthDate || null,
             age: this.age === '' || this.age === null || this.age === undefined ? null : Number(this.age),
             sex: this.sex || null,
-            grade_level_id: this.gradeLevelId ? Number(this.gradeLevelId) : null,
-            school_year_id: this.schoolYearId ? Number(this.schoolYearId) : null,
+            ...Object.fromEntries(STUDENT_DETAIL_FIELDS.map((field) => [field.key, cleanDetail(this[field.prop])])),
+            section_id: this.sectionId ? Number(this.sectionId) : null,
+            // Only sent when the list was chosen (null/absent = every subject of the grade level, or keep as is).
+            ...(this.subjects === null ? {} : { subject_ids: this.subjectIds }),
         };
     }
 
     /** Empty instance for "create" forms. */
-    static blank() {
-        return new Student();
+    static blank(sectionId = null) {
+        return new Student({ sectionId });
     }
 
     static fromJson(json) {
         if (!json) {
             return null;
         }
+
+        const section = Section.fromJson(json.section);
 
         return new Student({
             id: json.id ?? null,
@@ -167,19 +228,24 @@ export default class Student {
             birthDate: json.birth_date ? String(json.birth_date).slice(0, 10) : '',
             age: json.age === null || json.age === undefined ? null : Number(json.age),
             sex: json.sex ?? '',
-            gradeLevelId: json.grade_level_id ?? null,
-            gradeLevel: GradeLevel.fromJson(json.grade_level),
+            sectionId: json.section_id ?? null,
+            section,
+            gradeLevelId: json.grade_level_id ?? section?.gradeLevelId ?? null,
+            gradeLevel: GradeLevel.fromJson(json.grade_level) ?? section?.gradeLevel ?? null,
             schoolYearId: json.school_year_id ?? null,
             schoolYear: SchoolYear.fromJson(json.school_year),
+            subjects: Array.isArray(json.subjects) ? Subject.collection(json.subjects) : null,
             assignmentsCount: json.assignments_count === undefined ? null : Number(json.assignments_count),
             testedCount: json.tested_count === undefined ? null : Number(json.tested_count),
             issuedCount: json.issued_count === undefined ? null : Number(json.issued_count),
             assignedCount: json.assigned_count === undefined ? null : Number(json.assigned_count),
             averageScore: json.average_score === undefined || json.average_score === null ? null : Number(json.average_score),
             assignments: PaceAssignment.collection(json.assignments),
-            creator: json.creator ?? null,
+            enrollments: StudentEnrollment.collection(json.enrollments),
+            registeredBy: json.registered_by ?? null,
             createdAt: json.created_at ?? null,
             updatedAt: json.updated_at ?? null,
+            ...Object.fromEntries(STUDENT_DETAIL_FIELDS.map((field) => [field.prop, json[field.key] ?? ''])),
         });
     }
 

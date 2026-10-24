@@ -116,8 +116,8 @@ class SchoolYear extends Model
 
     /**
      * PACE records filed under this school year (matched by label). Limited to
-     * one teacher's students when a user is given, otherwise to every teacher
-     * of the organization.
+     * the records one teacher is in charge of when a user is given, otherwise
+     * to every student of the organization.
      *
      * @return \Illuminate\Database\Eloquent\Builder<\App\Models\PaceAssignment>
      */
@@ -129,11 +129,6 @@ class SchoolYear extends Model
             return $query->ownedBy($user);
         }
 
-        return $query->whereIn(
-            'pace_assignments.student_id',
-            Student::query()
-                ->whereIn('created_by', User::query()->inOrganization($this->organization_id)->select('id'))
-                ->select('id')
-        );
+        return $query->forOrganization($this->organization_id);
     }
 }

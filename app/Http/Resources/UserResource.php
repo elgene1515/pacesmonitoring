@@ -19,6 +19,15 @@ class UserResource extends JsonResource
         return [
             'id' => $this->id,
             'name' => $this->name,
+            // The name in parts (null for accounts made before the parts existed), contact details and terms acceptance.
+            'first_name' => $this->first_name,
+            'middle_name' => $this->middle_name,
+            'last_name' => $this->last_name,
+            'suffix' => $this->suffix,
+            'phone' => $this->phone,
+            'address' => $this->address,
+            'terms_accepted_at' => $this->terms_accepted_at?->toISOString(),
+            'terms_version' => $this->terms_version,
             'email' => $this->email,
             'email_verified' => $this->hasVerifiedEmail(),
             'role' => $this->roleEnum()->value,
@@ -34,6 +43,8 @@ class UserResource extends JsonResource
             'organization' => new OrganizationResource($this->whenLoaded('organization')),
             'branch' => new BranchResource($this->whenLoaded('branch')),
             'join_request' => new JoinRequestResource($this->whenLoaded('latestJoinRequest')),
+            // Platform staff only: requests waiting across every organization (the navigation badges).
+            'pending_counts' => $this->when($this->getAttribute('pending_counts') !== null, fn () => $this->getAttribute('pending_counts')),
             'created_at' => $this->created_at?->toISOString(),
         ];
     }

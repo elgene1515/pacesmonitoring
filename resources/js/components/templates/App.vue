@@ -96,32 +96,39 @@ onBeforeUnmount(() => {
 watch(() => route.fullPath, () => {
     closeMenu();
     closeUserMenu();
+
+    // The platform staff's badges count requests from every school, so a new page load asks again.
+    if (auth.isPlatform) {
+        auth.refresh().catch(() => {});
+    }
 });
 
 const teacherNavLinks = [
     { path: '/', label: 'Home' },
     { path: '/students', label: 'Students' },
     { path: '/paces', label: 'PACEs' },
-    { path: '/grade-levels', label: 'Grade levels' },
+    { path: '/classes', label: 'My classes' },
     { path: '/school-years', label: 'School years' },
 ];
 
 const adminNavLinks = [
     { path: '/admin', label: 'Home' },
-    { path: '/admin/users', label: 'Users' },
-    { path: '/admin/students', label: 'Students' },
-    { path: '/admin/pace-requests', label: 'PACE requests', badge: 'pendingPaceRequests' },
-    { path: '/admin/school-years', label: 'School years' },
-    { path: '/admin/organization', label: 'Organization', badge: 'pendingJoinRequests' },
+    { path: '/admin/students', label: 'Students', badge: 'pendingStudentChanges' },
+    { path: '/admin/paces', label: 'PACEs', badge: 'pendingPaceRequests' },
+    { path: '/admin/grade-levels', label: 'Grade Levels', badge: 'pendingTeachingRequests' },
+    { path: '/admin/school-years', label: 'School Years' },
+    { path: '/admin/users', label: 'Users', badge: 'pendingJoinRequests' },
+    { path: '/admin/organization', label: 'Organization' },
 ];
 
 const ownerNavLinks = [
     { path: '/owner', label: 'Home' },
-    { path: '/owner/organizations', label: 'Organizations' },
+    { path: '/owner/organizations', label: 'Organizations', badge: 'pendingOrganizationRequests' },
     { path: '/admin', label: 'Analytics' },
-    { path: '/admin/users', label: 'Users' },
-    { path: '/admin/students', label: 'Students' },
-    { path: '/admin/pace-requests', label: 'PACE requests' },
+    { path: '/admin/users', label: 'Users', badge: 'pendingJoinRequests' },
+    { path: '/admin/grade-levels', label: 'Grade Levels', badge: 'pendingTeachingRequests' },
+    { path: '/admin/students', label: 'Students', badge: 'pendingStudentChanges' },
+    { path: '/admin/paces', label: 'PACEs', badge: 'pendingPaceRequests' },
     { path: '/owner/plans', label: 'Plans' },
     { path: '/owner/staff', label: 'Staff', ownerOnly: true },
 ];
@@ -144,7 +151,30 @@ const brandTarget = computed(() => homeRouteFor(auth.user));
  * Counts shown as badges on the admin's tabs: teachers waiting to join
  * (Organization) and PACE stock requests waiting for an answer (PACE requests).
  */
-const badges = computed(() => ({
+const badges = computed(() => (auth.isPlatform ? platformBadges.value : schoolBadges.value));
+
+/**
+ * The platform staff's tabs count what is waiting across every school: join
+ * requests (Users), class requests (Grade Levels), proposed student changes
+ * (Students), PACE stock requests (PACEs), and join + plan requests together
+ * (Organizations, where both are decided).
+ */
+const platformBadges = computed(() => {
+    const counts = auth.user?.pendingCounts;
+
+    return {
+        pendingOrganizationRequests: {
+            count: (counts?.joinRequests ?? 0) + (counts?.planRequests ?? 0),
+            noun: 'pending join or plan request',
+        },
+        pendingJoinRequests: { count: counts?.joinRequests ?? 0, noun: 'pending join request' },
+        pendingPaceRequests: { count: counts?.paceRequests ?? 0, noun: 'pending PACE request' },
+        pendingTeachingRequests: { count: counts?.teachingRequests ?? 0, noun: 'pending class request' },
+        pendingStudentChanges: { count: counts?.studentChanges ?? 0, noun: 'proposed student change' },
+    };
+});
+
+const schoolBadges = computed(() => ({
     pendingJoinRequests: {
         count: auth.organization?.pendingJoinRequestsCount ?? 0,
         noun: 'pending join request',
@@ -152,6 +182,14 @@ const badges = computed(() => ({
     pendingPaceRequests: {
         count: auth.organization?.pendingPaceRequestsCount ?? 0,
         noun: 'pending PACE request',
+    },
+    pendingTeachingRequests: {
+        count: auth.organization?.pendingTeachingAssignmentRequestsCount ?? 0,
+        noun: 'pending class request',
+    },
+    pendingStudentChanges: {
+        count: auth.organization?.pendingStudentChangeRequestsCount ?? 0,
+        noun: 'proposed student change',
     },
 }));
 

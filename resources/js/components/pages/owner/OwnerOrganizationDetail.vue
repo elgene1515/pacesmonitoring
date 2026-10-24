@@ -5,12 +5,13 @@ import { ownerService } from '../../../services';
 import { useAuthStore } from '../../../stores/auth';
 import { useScopeStore } from '../../../stores/scope';
 import { notify } from '../../../stores/notifications';
-import { formatDate, pluralize, todayIso } from '../../../core/format';
+import { formatDate, pluralize, toIsoDate, todayIso } from '../../../core/format';
 import { SUBSCRIPTION_STATUSES } from '../../../models';
 import AppField from '../../ui/AppField.vue';
 import AppModal from '../../ui/AppModal.vue';
 import ConfirmDialog from '../../ui/ConfirmDialog.vue';
 import EmptyState from '../../ui/EmptyState.vue';
+import JoinRequestsPanel from '../../admin/JoinRequestsPanel.vue';
 import PasswordField from '../../ui/PasswordField.vue';
 import StatusBadge from '../../ui/StatusBadge.vue';
 
@@ -29,7 +30,6 @@ const scope = useScopeStore();
 
 const organization = ref(null);
 const members = ref([]);
-const joinRequests = ref([]);
 const planRequests = ref([]);
 const plans = ref([]);
 const loading = ref(true);
@@ -361,6 +361,46 @@ async function declineRequest() {
 
 /* ---------- members ---------- */
 
+/** Search (name, email), branch, role and registered-date filters for the member list. */
+const memberSearch = ref('');
+const memberBranch = ref('');
+const memberRole = ref('');
+const registeredFrom = ref('');
+const registeredTo = ref('');
+
+const hasMemberFilters = computed(() => memberSearch.value.trim() !== '' || memberBranch.value !== '' || memberRole.value !== '' || registeredFrom.value !== '' || registeredTo.value !== '');
+
+const visibleMembers = computed(() => {
+    const term = memberSearch.value.trim().toLowerCase();
+
+    return members.value.filter((member) => {
+        if (term !== '' && !`${member.name} ${member.email}`.toLowerCase().includes(term)) {
+            return false;
+        }
+
+        if (memberBranch.value !== '' && Number(member.branchId) !== Number(memberBranch.value)) {
+            return false;
+        }
+
+        if (memberRole.value !== '' && member.role !== memberRole.value) {
+            return false;
+        }
+
+        const day = toIsoDate(member.createdAt);
+
+        return (registeredFrom.value === '' || (day !== '' && day >= registeredFrom.value))
+            && (registeredTo.value === '' || (day !== '' && day <= registeredTo.value));
+    });
+});
+
+function clearMemberFilters() {
+    memberSearch.value = '';
+    memberBranch.value = '';
+    memberRole.value = '';
+    registeredFrom.value = '';
+    registeredTo.value = '';
+}
+
 const changingRole = ref(null);
 
 async function changeRole(member, role) {
@@ -401,9 +441,11 @@ async function load() {
 
         organization.value = detail.organization;
         members.value = detail.members;
-        joinRequests.value = detail.joinRequests;
         planRequests.value = detail.planRequests;
         plans.value = planList;
+
+        // Deciding a plan request changes the badges on the navigation tabs.
+        auth.refresh().catch(() => {});
     } catch (err) {
         organization.value = null;
         loadError.value = err?.isNotFound ? 'This organization could not be found.' : (err?.message ?? 'Failed to load the organization.');
@@ -680,9 +722,31 @@ onMounted(load);
                         <h2 class="card-title">Members</h2>
                         <p class="muted card-hint">Administrators first. Change a member's role here; an organization needs at least one administrator.</p>
                     </div>
+                    <span v-if="members.length > 0" class="muted nowrap">{{ pluralize(visibleMembers.length, 'member') }}</span>
+                </div>
+
+                <div v-if="members.length > 0" class="member-filters">
+                    <input v-model="memberSearch" class="input member-search" type="search" placeholder="Search by name or email" aria-label="Search members" />
+                    <select v-model="memberBranch" class="input" aria-label="Filter members by branch">
+                        <option value="">All branches</option>
+                        <option v-for="branch in organization.branches" :key="branch.id" :value="branch.id">{{ branch.name }}</option>
+                    </select>
+                    <select v-model="memberRole" class="input" aria-label="Filter members by role">
+                        <option value="">All roles</option>
+                        <option value="admin">Admins</option>
+                        <option value="teacher">Teachers</option>
+                    </select>
+                    <div class="date-range" role="group" aria-label="Filter by registered date">
+                        <span class="muted date-range-label">Registered</span>
+                        <input v-model="registeredFrom" class="input date-input" type="date" :max="registeredTo || undefined" aria-label="Registered from" />
+                        <span class="muted" aria-hidden="true">–</span>
+                        <input v-model="registeredTo" class="input date-input" type="date" :min="registeredFrom || undefined" aria-label="Registered to" />
+                    </div>
+                    <button v-if="hasMemberFilters" type="button" class="btn btn-link btn-sm" @click="clearMemberFilters">Clear</button>
                 </div>
 
                 <EmptyState v-if="members.length === 0" message="No members yet." />
+                <EmptyState v-else-if="visibleMembers.length === 0" message="No members match your filters." />
 
                 <div v-else class="table-wrap">
                     <table class="table">
@@ -696,7 +760,7 @@ onMounted(load);
                             </tr>
                         </thead>
                         <tbody>
-                            <tr v-for="member in members" :key="member.id">
+                            <tr v-for="member in visibleMembers" :key="member.id">
                                 <td class="ellipsis">
                                     <RouterLink :to="{ name: 'admin-user-detail', params: { id: member.id } }" @click="scope.select(organization.id, organization.name)">{{ member.name }}</RouterLink>
                                 </td>
@@ -722,39 +786,7 @@ onMounted(load);
             </section>
 
             <!-- ============ Join requests ============ -->
-            <section class="card list-section">
-                <div class="toolbar">
-                    <div>
-                        <h2 class="card-title">Join requests</h2>
-                        <p class="muted card-hint">The latest requests; the school's administrators accept or decline them.</p>
-                    </div>
-                </div>
-
-                <EmptyState v-if="joinRequests.length === 0" message="No join requests yet." />
-
-                <table v-else class="table">
-                    <thead>
-                        <tr>
-                            <th>Teacher</th>
-                            <th>Branch</th>
-                            <th>Status</th>
-                            <th>Requested</th>
-                            <th>Decided</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr v-for="request in joinRequests" :key="request.id">
-                            <td class="ellipsis">{{ request.userName }} <span class="muted small">{{ request.user?.email }}</span></td>
-                            <td>{{ request.branchName || '—' }}</td>
-                            <td>
-                                <StatusBadge :tone="request.isPending ? 'warn' : request.isAccepted ? 'ok' : request.isDeclined ? 'bad' : 'muted'">{{ request.statusLabel }}</StatusBadge>
-                            </td>
-                            <td class="nowrap muted">{{ formatDate(request.createdAt) || '—' }}</td>
-                            <td class="nowrap muted">{{ request.decidedAt ? `${formatDate(request.decidedAt)}${request.decidedBy?.name ? ` by ${request.decidedBy.name}` : ''}` : '—' }}</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </section>
+            <JoinRequestsPanel :organization-id="organization.id" :school-name="organization.name" @decided="load" />
         </template>
 
         <!-- Subscription period form (also used to approve a plan change) -->
@@ -850,8 +882,15 @@ onMounted(load);
     font-size: 0.92rem;
 }
 
+/* The school's name and actions stay pinned under the top bar while the page scrolls (like the detail pages of the admin area). */
 .page-header {
+    position: sticky;
+    top: var(--nav-height, 0px);
+    z-index: 20;
+    padding: 12px 0;
     margin-bottom: 0;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
 }
 
 .title-badge {
@@ -1089,6 +1128,40 @@ dl.info {
 
 .table-wrap {
     overflow-x: auto;
+}
+
+/* Member filters: search, branch, role and registered dates. */
+.member-filters {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+}
+
+.member-filters .input {
+    width: auto;
+}
+
+.member-search {
+    flex: 1 1 200px;
+    max-width: 280px;
+}
+
+.date-range {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.date-range-label {
+    font-size: 0.9rem;
+}
+
+.member-filters .date-input {
+    width: 140px;
 }
 
 .role-select {

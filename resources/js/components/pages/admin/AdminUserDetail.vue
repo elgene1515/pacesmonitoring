@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { adminService, ownerService } from '../../../services';
-import { SEX_OPTIONS } from '../../../models';
+import { Pace, SEX_OPTIONS, STOCK_LEVEL_LABELS, STOCK_LEVEL_TONES } from '../../../models';
 import { useAuthStore } from '../../../stores/auth';
 import { notify } from '../../../stores/notifications';
 import { formatDate, formatScore, pluralize } from '../../../core/format';
@@ -60,7 +60,19 @@ const removing = ref(false);
 /** Branches of the member's own organization (the owner's branch list may span several). */
 const memberBranches = computed(() => branches.value.filter((branch) => Number(branch.organizationId) === Number(user.value?.organizationId)));
 
-const canChangeRole = computed(() => auth.isPlatform && Boolean(user.value) && !user.value.isOwner && user.value.hasOrganization);
+/** School admins and the platform switch members between admin and teacher; nobody changes their own role. */
+const canChangeRole = computed(() => (auth.isPlatform || auth.isAdmin) && Boolean(user.value) && !user.value.isPlatform && user.value.hasOrganization && !isSelf.value);
+
+const roleHint = computed(() => {
+    const organization = auth.isAdmin ? auth.organization : null;
+    const limit = organization?.adminLimit ?? null;
+
+    if (limit === null) {
+        return 'Administrators manage the school; teachers own records.';
+    }
+
+    return `Administrators manage the school; teachers own records. Your plan allows ${limit === 1 ? '1 administrator' : `up to ${limit} administrators`} (${organization.adminsCount ?? '?'} now).`;
+});
 const canRemove = computed(() => Boolean(user.value) && user.value.isTeacher && user.value.hasOrganization && !isSelf.value);
 
 async function loadBranches() {
@@ -106,8 +118,11 @@ async function saveRole() {
     savingRole.value = true;
 
     try {
-        user.value = await ownerService.updateUserRole(props.id, roleValue.value);
-        notify.success(`${user.value.name} is now ${user.value.roleLabel.toLowerCase() === 'admin' ? 'an administrator' : 'a teacher'}.`);
+        user.value = auth.isPlatform
+            ? await ownerService.updateUserRole(props.id, roleValue.value)
+            : await adminService.updateUserRole(props.id, roleValue.value);
+        notify.success(`${user.value.name} is now ${user.value.isAdmin ? 'an administrator' : 'a teacher'}.`);
+        auth.refresh().catch(() => {});
     } catch (err) {
         notify.error(err?.isValidation ? (err.first('role') ?? err.message) : (err?.message ?? 'Unable to change the role.'));
         roleValue.value = user.value?.role ?? '';
@@ -142,9 +157,9 @@ const savingPassword = ref(false);
 
 const TABS = [
     { key: 'profile', label: 'Profile' },
-    { key: 'grade-levels', label: 'Grade levels' },
+    { key: 'grade-levels', label: 'Classes' },
     { key: 'students', label: 'Students' },
-    { key: 'paces', label: 'PACEs' },
+    { key: 'paces', label: 'PACE booklets' },
 ];
 const activeTab = ref('profile');
 const tabLoading = ref(false);
@@ -156,7 +171,19 @@ const studentsLoaded = ref(false);
 const teacherPaces = ref([]);
 const pacesLoaded = ref(false);
 
-/* ---------- Grade levels tab: search by grade level / subject name, narrow to one school year ---------- */
+/* ---------- Classes tab: the grade levels the teacher teaches in, and their subjects there ---------- */
+
+/** The subjects of a grade level this teacher teaches in at least one of its sections. */
+function teacherSubjects(level) {
+    return level.subjects.filter((subject) => level.sections.some((section) => section.assignmentFor(subject.id)?.teacherId === Number(props.id)));
+}
+
+/** The sections of a grade level where this teacher teaches a subject, by name. */
+function sectionsTeaching(level, subject) {
+    return level.sections
+        .filter((section) => section.assignmentFor(subject.id)?.teacherId === Number(props.id))
+        .map((section) => section.name);
+}
 
 const gradeLevelSearch = ref('');
 const gradeLevelSchoolYearId = ref('');
@@ -199,11 +226,12 @@ const visibleSubjectsByLevel = computed(() => {
         }
 
         if (!gradeLevelSearchTerm.value || matchesGradeLevelSearch(level.name)) {
-            map.set(level.id, level.subjects);
+            map.set(level.id, teacherSubjects(level));
             continue;
         }
 
-        const matching = level.subjects.filter((subject) => matchesGradeLevelSearch(subject.name));
+        const matching = teacherSubjects(level).filter((subject) => matchesGradeLevelSearch(subject.name)
+            || sectionsTeaching(level, subject).some((name) => matchesGradeLevelSearch(name)));
 
         if (matching.length > 0) {
             map.set(level.id, matching);
@@ -216,7 +244,7 @@ const visibleSubjectsByLevel = computed(() => {
 const filteredGradeLevels = computed(() => gradeLevels.value.filter((level) => visibleSubjectsByLevel.value.has(level.id)));
 
 function visibleSubjects(level) {
-    return visibleSubjectsByLevel.value.get(level.id) ?? level.subjects;
+    return visibleSubjectsByLevel.value.get(level.id) ?? teacherSubjects(level);
 }
 
 /** Grade levels grouped by school year (newest first), mirroring the teacher's own view. */
@@ -237,7 +265,9 @@ const gradeLevelGroups = computed(() => {
 });
 
 function levelMeta(level) {
-    return `${pluralize(level.subjects.length, 'subject')} · ${pluralize(level.studentsCount ?? 0, 'student')}`;
+    const students = level.sections.reduce((sum, section) => sum + Number(section.studentsCount ?? 0), 0);
+
+    return `${pluralize(teacherSubjects(level).length, 'subject')} · ${pluralize(level.sections.length, 'section')} · ${pluralize(students, 'student')}`;
 }
 
 function clearGradeLevelFilters() {
@@ -253,6 +283,9 @@ const studentSchoolYearId = ref('');
 const loadingStudentSchoolYears = ref(false);
 const studentGradeLevels = ref([]);
 const studentGradeLevelId = ref('');
+/** Section filter: one of the chosen grade level's sections. */
+const studentSectionId = ref('');
+const studentSectionOptions = computed(() => studentGradeLevels.value.find((level) => Number(level.id) === Number(studentGradeLevelId.value))?.sections ?? []);
 const loadingStudentGradeLevels = ref(false);
 
 /** '' (any) | 'male' | 'female': narrows the loaded students by sex. */
@@ -286,6 +319,7 @@ const studentHasFilters = computed(() => (
     studentSearch.value.trim() !== ''
     || studentSchoolYearId.value !== ''
     || studentGradeLevelId.value !== ''
+    || studentSectionId.value !== ''
     || studentSexFilter.value !== ''
     || studentHasScoreRange.value
 ));
@@ -325,6 +359,7 @@ async function loadStudents() {
             search: studentSearch.value,
             school_year_id: studentSchoolYearId.value,
             grade_level_id: studentGradeLevelId.value,
+            section_id: studentSectionId.value,
         });
         studentsLoaded.value = true;
     } catch (err) {
@@ -349,13 +384,14 @@ async function loadStudentSchoolYears() {
 /** Changing the school year drops the grade level filter and loads that year's grade levels. */
 async function onStudentSchoolYearChange() {
     studentGradeLevelId.value = '';
+    studentSectionId.value = '';
     studentGradeLevels.value = [];
 
     if (studentSchoolYearId.value) {
         loadingStudentGradeLevels.value = true;
 
         try {
-            studentGradeLevels.value = await adminService.listGradeLevels(props.id, studentSchoolYearId.value);
+            studentGradeLevels.value = await adminService.listGradeLevels({ teacher_id: props.id, school_year_id: studentSchoolYearId.value });
         } catch (err) {
             notify.error(err?.message ?? 'Failed to load grade levels.');
         } finally {
@@ -366,11 +402,18 @@ async function onStudentSchoolYearChange() {
     loadStudents();
 }
 
+/** Changing the grade level drops the section filter (its sections are the options). */
+function onStudentGradeLevelChange() {
+    studentSectionId.value = '';
+    loadStudents();
+}
+
 function clearStudentFilters() {
     studentSearch.value = '';
     studentSchoolYearId.value = '';
     studentGradeLevels.value = [];
     studentGradeLevelId.value = '';
+    studentSectionId.value = '';
     studentSexFilter.value = '';
     studentScoreMin.value = '';
     studentScoreMax.value = '';
@@ -401,11 +444,19 @@ const PACE_RECORDS_OPTIONS = [
 const paceStockFilter = ref('');
 
 const PACE_STOCK_OPTIONS = [
-    { value: '', label: 'Any stock' },
-    { value: 'in', label: 'In stock' },
-    { value: 'low', label: 'Low stock' },
-    { value: 'out', label: 'Out of stock' },
+    { value: '', label: 'Any amount' },
+    { value: 'low', label: 'Running low' },
+    { value: 'ok', label: 'Plenty' },
 ];
+
+/** The booklets of a PACE this teacher holds, and their level. */
+function heldBy(pace) {
+    return pace.holdingOf(props.id);
+}
+
+function heldLevel(pace) {
+    return Pace.levelFor(heldBy(pace));
+}
 
 const paceHasFilters = computed(() => paceSearch.value.trim() !== '' || paceRecordsFilter.value !== '' || paceStockFilter.value !== '');
 
@@ -418,18 +469,14 @@ const visiblePaces = computed(() => {
         list = list.filter((pace) => (pace.assignmentsCount ?? 0) === 0);
     }
 
-    if (paceStockFilter.value === 'in') {
-        list = list.filter((pace) => !pace.isOutOfStock);
-    } else if (paceStockFilter.value === 'low') {
-        list = list.filter((pace) => pace.isLowStock);
-    } else if (paceStockFilter.value === 'out') {
-        list = list.filter((pace) => pace.isOutOfStock);
+    if (paceStockFilter.value !== '') {
+        list = list.filter((pace) => heldLevel(pace) === paceStockFilter.value);
     }
 
     return list;
 });
 
-const pacesEmptyMessage = computed(() => (paceHasFilters.value ? 'No PACEs match your filters.' : 'This teacher has no PACEs yet.'));
+const pacesEmptyMessage = computed(() => (paceHasFilters.value ? 'No PACEs match your filters.' : 'This teacher holds no PACE booklets.'));
 
 async function loadPaces() {
     tabLoading.value = true;
@@ -481,6 +528,7 @@ async function load() {
     studentSchoolYearId.value = '';
     studentGradeLevels.value = [];
     studentGradeLevelId.value = '';
+    studentSectionId.value = '';
     studentSexFilter.value = '';
     studentScoreMin.value = '';
     studentScoreMax.value = '';
@@ -506,7 +554,7 @@ async function selectTab(tab) {
         tabLoading.value = true;
 
         try {
-            gradeLevels.value = await adminService.listGradeLevels(props.id);
+            gradeLevels.value = await adminService.listGradeLevels({ teacher_id: props.id });
             gradeLevelsLoaded.value = true;
         } catch (err) {
             notify.error(err?.message ?? 'Failed to load grade levels.');
@@ -735,7 +783,7 @@ onBeforeUnmount(() => {
                     </dl>
                 </section>
 
-                <!-- Membership: move between branches, change the role (owner), remove from the school. -->
+                <!-- Membership: move between branches, change the role (admins and the platform), remove from the school. -->
                 <section v-if="user.hasOrganization && (user.isTeacher || canChangeRole)" class="card">
                     <h2 class="card-title">Membership</h2>
                     <div class="membership">
@@ -755,13 +803,13 @@ onBeforeUnmount(() => {
                             </div>
                         </AppField>
 
-                        <AppField v-if="canChangeRole" label="Role" for="admin-user-role" hint="Administrators manage the school; teachers own records.">
+                        <AppField v-if="canChangeRole" label="Role" for="admin-user-role" :hint="roleHint">
                             <div class="inline-row">
-                                <select id="admin-user-role" v-model="roleValue" class="input" :disabled="savingRole">
+                                <select id="admin-user-role" v-model="roleValue" class="input" :disabled="savingRole || !auth.canWrite">
                                     <option value="admin">Admin</option>
                                     <option value="teacher">Teacher</option>
                                 </select>
-                                <button type="button" class="btn btn-secondary" :disabled="savingRole || roleValue === user.role" @click="saveRole">
+                                <button type="button" class="btn btn-secondary" :disabled="savingRole || !auth.canWrite || roleValue === user.role" @click="saveRole">
                                     {{ savingRole ? 'Saving…' : 'Change role' }}
                                 </button>
                             </div>
@@ -913,8 +961,8 @@ onBeforeUnmount(() => {
                             v-model="gradeLevelSearch"
                             class="input search"
                             type="search"
-                            placeholder="Search grade level or subject"
-                            aria-label="Search grade levels and subjects"
+                            placeholder="Search grade level, subject or section"
+                            aria-label="Search the teacher's classes"
                             :disabled="gradeLevels.length === 0"
                         />
                         <label class="year">
@@ -938,9 +986,13 @@ onBeforeUnmount(() => {
 
                 <p v-if="tabLoading" class="muted">Loading…</p>
 
-                <EmptyState v-else-if="gradeLevels.length === 0" message="This teacher has no grade levels yet." />
+                <EmptyState v-else-if="gradeLevels.length === 0" message="This teacher does not teach any class yet. Assign classes from Grade Levels.">
+                    <template #action>
+                        <RouterLink :to="{ name: 'admin-grade-levels' }" class="btn btn-secondary btn-sm">Grade Levels</RouterLink>
+                    </template>
+                </EmptyState>
 
-                <EmptyState v-else-if="gradeLevelGroups.length === 0" message="No grade levels or subjects match your filters.">
+                <EmptyState v-else-if="gradeLevelGroups.length === 0" message="No classes match your filters.">
                     <template #action>
                         <button type="button" class="btn btn-secondary btn-sm" @click="clearGradeLevelFilters">Clear filters</button>
                     </template>
@@ -962,8 +1014,8 @@ onBeforeUnmount(() => {
                                         </h3>
                                         <p class="muted level-meta">
                                             {{ levelMeta(level) }}
-                                            <template v-if="gradeLevelHasFilters && visibleSubjects(level).length !== level.subjects.length">
-                                                · showing {{ visibleSubjects(level).length }} of {{ level.subjects.length }}
+                                            <template v-if="gradeLevelHasFilters && visibleSubjects(level).length !== teacherSubjects(level).length">
+                                                · showing {{ visibleSubjects(level).length }} of {{ teacherSubjects(level).length }}
                                             </template>
                                         </p>
                                     </div>
@@ -977,18 +1029,20 @@ onBeforeUnmount(() => {
                                     </RouterLink>
                                 </div>
 
-                                <EmptyState v-if="visibleSubjects(level).length === 0" compact message="No subjects yet." />
+                                <EmptyState v-if="visibleSubjects(level).length === 0" compact message="No subjects assigned to this teacher here." />
 
                                 <table v-else class="table subjects">
                                     <!-- Fixed column widths so the columns line up across every grade level card. -->
                                     <colgroup>
                                         <col class="col-subject" />
+                                        <col class="col-sections" />
                                         <col class="col-records" />
                                         <col class="col-actions" />
                                     </colgroup>
                                     <thead>
                                         <tr>
                                             <th>Subject</th>
+                                            <th>Sections</th>
                                             <th>PACE records</th>
                                             <th class="table-actions"><span class="sr-only">Actions</span></th>
                                         </tr>
@@ -998,6 +1052,7 @@ onBeforeUnmount(() => {
                                             <td class="subject-name">
                                                 <RouterLink :to="{ name: 'admin-subject-detail', params: { id: subject.id } }">{{ subject.name }}</RouterLink>
                                             </td>
+                                            <td class="ellipsis" :title="sectionsTeaching(level, subject).join(', ')">{{ sectionsTeaching(level, subject).join(', ') }}</td>
                                             <td class="records">
                                                 <PaceRecordsBar
                                                     :total="subject.assignmentsCount"
@@ -1056,7 +1111,7 @@ onBeforeUnmount(() => {
                             class="input select"
                             aria-label="Filter by grade level"
                             :disabled="!studentSchoolYearId || loadingStudentGradeLevels"
-                            @change="loadStudents"
+                            @change="onStudentGradeLevelChange"
                         >
                             <option value="">
                                 {{ studentSchoolYearId ? 'All grade levels' : 'Select a school year first' }}
@@ -1064,6 +1119,16 @@ onBeforeUnmount(() => {
                             <option v-for="level in studentGradeLevels" :key="level.id" :value="level.id">
                                 {{ level.name }}
                             </option>
+                        </select>
+                        <select
+                            v-model="studentSectionId"
+                            class="input select"
+                            aria-label="Filter by section"
+                            :disabled="!studentGradeLevelId"
+                            @change="loadStudents"
+                        >
+                            <option value="">{{ studentGradeLevelId ? 'All sections' : 'Select a grade level first' }}</option>
+                            <option v-for="section in studentSectionOptions" :key="section.id" :value="section.id">{{ section.name }}</option>
                         </select>
                         <select v-model="studentSexFilter" class="input select select-sm" aria-label="Filter by sex">
                             <option value="">All sexes</option>
@@ -1132,7 +1197,7 @@ onBeforeUnmount(() => {
                         <thead>
                             <tr>
                                 <th>Name</th>
-                                <th>Grade level</th>
+                                <th>Class</th>
                                 <th>School year</th>
                                 <th>Sex</th>
                                 <th>Age</th>
@@ -1149,7 +1214,7 @@ onBeforeUnmount(() => {
                                         {{ student.fullName }}
                                     </RouterLink>
                                 </td>
-                                <td class="ellipsis">{{ student.gradeLevelName || '—' }}</td>
+                                <td class="ellipsis" :title="student.classLabel">{{ student.classLabel || '—' }}</td>
                                 <td class="mono">{{ student.schoolYearName || '—' }}</td>
                                 <td>{{ student.sexLabel || '—' }}</td>
                                 <td class="mono">{{ student.age ?? '—' }}</td>
@@ -1201,7 +1266,7 @@ onBeforeUnmount(() => {
                                 {{ option.label }}
                             </option>
                         </select>
-                        <select v-model="paceStockFilter" class="input select" aria-label="Filter by stock">
+                        <select v-model="paceStockFilter" class="input select" aria-label="Filter by booklets held">
                             <option v-for="option in PACE_STOCK_OPTIONS" :key="option.value" :value="option.value">
                                 {{ option.label }}
                             </option>
@@ -1240,7 +1305,7 @@ onBeforeUnmount(() => {
                             <tr>
                                 <th>Number</th>
                                 <th>Name</th>
-                                <th>Stock</th>
+                                <th>Booklets held</th>
                                 <th>PACE records</th>
                                 <th class="table-actions"><span class="sr-only">Actions</span></th>
                             </tr>
@@ -1254,8 +1319,8 @@ onBeforeUnmount(() => {
                                 </td>
                                 <td class="ellipsis">{{ pace.name }}</td>
                                 <td class="stock-cell nowrap">
-                                    <span class="mono stock-value">{{ pace.stock }}</span>
-                                    <StatusBadge :tone="pace.stockTone">{{ pace.stockLabel }}</StatusBadge>
+                                    <span class="mono stock-value">{{ heldBy(pace) }}</span>
+                                    <StatusBadge :tone="STOCK_LEVEL_TONES[heldLevel(pace)]">{{ STOCK_LEVEL_LABELS[heldLevel(pace)] }}</StatusBadge>
                                     <RouterLink
                                         v-if="pace.hasPendingRequest"
                                         :to="{ name: 'admin-pace-requests' }"
@@ -1579,6 +1644,10 @@ dl.info {
 
 .subjects .col-records {
     width: 160px;
+}
+
+.subjects .col-sections {
+    width: 32%;
 }
 
 .subject-name {

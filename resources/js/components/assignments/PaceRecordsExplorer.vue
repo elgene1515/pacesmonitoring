@@ -6,8 +6,8 @@ import EmptyState from '../ui/EmptyState.vue';
 import PaceRecordsLegend from '../charts/PaceRecordsLegend.vue';
 
 /**
- * Searchable, filterable table of PACE records (student, PACE, status, period,
- * dates, score). Filtering is done client-side on the list it is given.
+ * Searchable, filterable table of PACE records (student ID and name, PACE,
+ * status, period, dates, score); the search also matches the student ID. Filtering is done client-side on the list it is given.
  *
  *  props   records        PaceAssignment[]     records to show (with student and pace loaded)
  *          subjects       {id, name}[]|null    when given, adds a Subject column and filter
@@ -16,6 +16,7 @@ import PaceRecordsLegend from '../charts/PaceRecordsLegend.vue';
  *          yearFilter     boolean              add a school year filter (options come from the records)
  *          quarterFilter  boolean              add a quarter filter
  *          scoreFilter    boolean              add a score range filter (0-100; unscored records drop out once a bound is set)
+ *          dateFilter     boolean              add issued and tested date ranges (records without that date drop out once a bound is set)
  *          admin          boolean              link students / PACEs / subjects to the read-only admin pages
  *          order          string[]             legend order (defaults to tested / issued / assigned)
  *          title          string               card heading
@@ -29,6 +30,7 @@ const props = defineProps({
     yearFilter: { type: Boolean, default: false },
     quarterFilter: { type: Boolean, default: false },
     scoreFilter: { type: Boolean, default: false },
+    dateFilter: { type: Boolean, default: false },
     admin: { type: Boolean, default: false },
     order: { type: Array, default: () => ['tested', 'issued', 'assigned'] },
     title: { type: String, default: 'PACE records' },
@@ -51,6 +53,30 @@ const schoolYearFilter = ref('');
 const quarterFilterValue = ref('');
 const scoreMin = ref('');
 const scoreMax = ref('');
+/** Issued / tested date ranges ("YYYY-MM-DD", either end may be empty). */
+const issuedFrom = ref('');
+const issuedTo = ref('');
+const testedFrom = ref('');
+const testedTo = ref('');
+
+/** A date range as typed, put in order when the start was typed after the end. */
+function orderedRange(from, to) {
+    return from && to && from > to ? { from: to, to: from } : { from, to };
+}
+
+const issuedRange = computed(() => orderedRange(issuedFrom.value, issuedTo.value));
+const testedRange = computed(() => orderedRange(testedFrom.value, testedTo.value));
+
+/** True when `date` ("YYYY-MM-DD…") lies in the range; a missing date fails any bound. */
+function inRange(date, range) {
+    if (!range.from && !range.to) {
+        return true;
+    }
+
+    const day = date ? String(date).slice(0, 10) : '';
+
+    return day !== '' && (!range.from || day >= range.from) && (!range.to || day <= range.to);
+}
 
 /** The score bounds as numbers (null when blank), swapped when entered back to front. */
 const scoreRange = computed(() => {
@@ -90,11 +116,16 @@ const hasFilters = computed(
         || schoolYearFilter.value !== ''
         || quarterFilterValue.value !== ''
         || scoreRange.value.min !== null
-        || scoreRange.value.max !== null,
+        || scoreRange.value.max !== null
+        || issuedFrom.value !== ''
+        || issuedTo.value !== ''
+        || testedFrom.value !== ''
+        || testedTo.value !== '',
 );
 
 function matchesSearch(record, needle) {
     const haystack = [
+        record.student?.studentNumber,
         record.student?.fullName,
         record.student?.displayName,
         record.student?.gradeLevelName,
@@ -145,6 +176,10 @@ const rows = computed(() => {
             }
         }
 
+        if (!inRange(record.issuedDate, issuedRange.value) || !inRange(record.dateTested, testedRange.value)) {
+            return false;
+        }
+
         return needle === '' || matchesSearch(record, needle);
     });
 });
@@ -170,6 +205,10 @@ function clearFilters() {
     quarterFilterValue.value = '';
     scoreMin.value = '';
     scoreMax.value = '';
+    issuedFrom.value = '';
+    issuedTo.value = '';
+    testedFrom.value = '';
+    testedTo.value = '';
 }
 </script>
 
@@ -186,8 +225,8 @@ function clearFilters() {
                     v-model="search"
                     class="input search"
                     type="search"
-                    :placeholder="showPace ? 'Search student, PACE or subject' : 'Search student, grade or subject'"
-                    aria-label="Search PACE records"
+                    :placeholder="showPace ? 'Search name, ID, PACE, subject' : 'Search name, ID, grade, subject'"
+                    aria-label="Search PACE records by student, student ID, PACE, grade or subject"
                 />
                 <select v-if="showSubject" v-model="subjectFilter" class="input select" aria-label="Filter by subject">
                     <option value="">All subjects</option>
@@ -230,6 +269,20 @@ function clearFilters() {
                         aria-label="Maximum score"
                     />
                 </div>
+                <template v-if="dateFilter">
+                    <div class="date-range" role="group" aria-label="Filter by issued date">
+                        <span class="muted date-range-label">Issued</span>
+                        <input v-model="issuedFrom" class="input date-input" type="date" :max="issuedTo || undefined" aria-label="Issued from" />
+                        <span class="muted" aria-hidden="true">–</span>
+                        <input v-model="issuedTo" class="input date-input" type="date" :min="issuedFrom || undefined" aria-label="Issued to" />
+                    </div>
+                    <div class="date-range" role="group" aria-label="Filter by tested date">
+                        <span class="muted date-range-label">Tested</span>
+                        <input v-model="testedFrom" class="input date-input" type="date" :max="testedTo || undefined" aria-label="Tested from" />
+                        <span class="muted" aria-hidden="true">–</span>
+                        <input v-model="testedTo" class="input date-input" type="date" :min="testedFrom || undefined" aria-label="Tested to" />
+                    </div>
+                </template>
                 <button v-if="hasFilters" type="button" class="btn btn-link btn-sm" @click="clearFilters">Clear</button>
             </div>
             <div class="toolbar-meta">
@@ -249,6 +302,7 @@ function clearFilters() {
                 <table class="table">
                     <thead>
                         <tr>
+                            <th>Student ID</th>
                             <th>Student</th>
                             <th v-if="showGrade">Grade</th>
                             <th v-if="showSubject">Subject</th>
@@ -263,6 +317,10 @@ function clearFilters() {
                     </thead>
                     <tbody>
                         <tr v-for="record in rows" :key="record.id">
+                            <td class="mono nowrap">
+                                <span v-if="record.student?.studentNumber">{{ record.student.studentNumber }}</span>
+                                <span v-else class="muted">—</span>
+                            </td>
                             <td>
                                 <RouterLink v-if="record.student" :to="{ name: routes.student, params: { id: record.student.id } }">
                                     {{ record.student.fullName }}
@@ -383,6 +441,20 @@ function clearFilters() {
     width: 78px;
 }
 
+.date-range {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.date-range-label {
+    font-size: 0.9rem;
+}
+
+.tools .date-input {
+    width: 140px;
+}
+
 .count {
     font-size: 0.92rem;
 }
@@ -392,7 +464,7 @@ function clearFilters() {
 }
 
 .table {
-    min-width: 860px;
+    min-width: 960px;
 }
 
 .pace-name {

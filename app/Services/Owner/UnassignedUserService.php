@@ -30,14 +30,13 @@ class UnassignedUserService
     /**
      * Record tables that point at a user, with the column that does. Deleting an
      * account that still owns any of them would delete (or orphan) data that
-     * belongs to its previous school, so such accounts are kept.
+     * belongs to its previous school, so such accounts are kept. (Students,
+     * grade levels and PACEs belong to the school now and only remember who
+     * registered them, so they no longer hold an account back.)
      *
      * @var array<string, array{0: class-string<\Illuminate\Database\Eloquent\Model>, 1: string}>
      */
     protected const RECORDS = [
-        'students' => [Student::class, 'created_by'],
-        'paces' => [Pace::class, 'created_by'],
-        'grade_levels' => [GradeLevel::class, 'user_id'],
         'school_years' => [SchoolYear::class, 'user_id'],
         'pace_requests' => [PaceRequest::class, 'user_id'],
     ];

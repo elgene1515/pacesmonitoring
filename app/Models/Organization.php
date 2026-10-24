@@ -6,6 +6,8 @@ use App\Enums\JoinRequestStatus;
 use App\Enums\PaceRequestStatus;
 use App\Enums\PlanRequestStatus;
 use App\Enums\Role;
+use App\Enums\StudentChangeRequestStatus;
+use App\Enums\TeachingAssignmentRequestStatus;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -168,11 +170,54 @@ class Organization extends Model
     }
 
     /**
-     * Students registered by the organization's teachers.
+     * Teachers' requests for open section + subject slots.
+     */
+    public function teachingAssignmentRequests(): HasMany
+    {
+        return $this->hasMany(TeachingAssignmentRequest::class);
+    }
+
+    public function pendingTeachingAssignmentRequests(): HasMany
+    {
+        return $this->hasMany(TeachingAssignmentRequest::class)->where('status', TeachingAssignmentRequestStatus::Pending->value);
+    }
+
+    /**
+     * Teachers' proposals to change a student's details.
+     */
+    public function studentChangeRequests(): HasMany
+    {
+        return $this->hasMany(StudentChangeRequest::class);
+    }
+
+    public function pendingStudentChangeRequests(): HasMany
+    {
+        return $this->hasMany(StudentChangeRequest::class)->where('status', StudentChangeRequestStatus::Pending->value);
+    }
+
+    /**
+     * Every student enrolled in one of the organization's sections. One row
+     * per student, so the count is the real enrollment (the plan limit).
      */
     public function studentsQuery(): \Illuminate\Database\Eloquent\Builder
     {
-        return Student::query()->whereIn('created_by', $this->users()->select('id'));
+        return Student::query()->forOrganization($this);
+    }
+
+    /**
+     * Every grade level of the organization's branches.
+     */
+    public function gradeLevelsQuery(): \Illuminate\Database\Eloquent\Builder
+    {
+        return GradeLevel::query()->forOrganization($this);
+    }
+
+    /**
+     * The PACE catalogs of every branch.
+     */
+    public function pacesQuery(): \Illuminate\Database\Eloquent\Builder
+    {
+        return Pace::query()->forOrganization($this);
     }
 
     /**

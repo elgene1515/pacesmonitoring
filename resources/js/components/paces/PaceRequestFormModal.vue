@@ -7,10 +7,12 @@ import AppModal from '../ui/AppModal.vue';
 import AppField from '../ui/AppField.vue';
 
 /**
- * Ask the school admin for PACE booklets, or edit a pending request.
+ * Ask the school admin for PACE booklets, or edit a pending request. The
+ * PACE is one of the branch catalog, or a new number and name the admin adds
+ * to the catalog when giving.
  *
  *  props   modelValue  Boolean           open state (v-model)
- *          pace        Pace|null         preselects one of the teacher's PACEs (new requests)
+ *          pace        Pace|null         preselects a catalog PACE (new requests)
  *          request     PaceRequest|null  pending request to edit; null files a new one
  *  emits   update:modelValue(Boolean)
  *          saved(PaceRequest)
@@ -36,7 +38,7 @@ const errors = computed(() => ({ ...clientErrors.value, ...serverErrors.value })
 const isEdit = computed(() => Boolean(props.request?.id));
 const title = computed(() => (isEdit.value ? 'Edit stock request' : 'Request PACE stock'));
 
-/** The registered PACE picked in the select, when any. */
+/** The catalog PACE picked in the select, when any. */
 const linkedPace = computed(() => (form.pace_id === '' || form.pace_id === null ? null : paces.byId(form.pace_id) ?? null));
 
 watch(linkedPace, (pace) => {
@@ -90,13 +92,13 @@ function validate() {
         const number = String(form.pace_number).trim();
 
         if (!number) {
-            found.pace_number = ['Pick one of your PACEs or enter the PACE number.'];
+            found.pace_number = ['Pick a PACE from the catalog or enter the PACE number.'];
         } else if (!/^[0-9]+$/.test(number)) {
             found.pace_number = ['The PACE number must contain digits only.'];
         }
 
         if (!String(form.pace_name).trim()) {
-            found.pace_name = ['Pick one of your PACEs or enter the PACE name.'];
+            found.pace_name = ['Pick a PACE from the catalog or enter the PACE name.'];
         }
     }
 
@@ -162,12 +164,12 @@ async function submit() {
                 label="PACE"
                 :for="`${uid}-pace`"
                 :error="errors.pace_id"
-                hint="Pick one of your registered PACEs, or choose “Other” and type the number and name."
+                hint="Pick a PACE from your branch's catalog, or choose “Other” and type the number and name of a new one."
             >
                 <select :id="`${uid}-pace`" v-model="form.pace_id" class="input" :disabled="submitting">
-                    <option value="">Other / not registered yet</option>
+                    <option value="">Other / not in the catalog yet</option>
                     <option v-for="pace in paces.items" :key="pace.id" :value="pace.id">
-                        {{ pace.label }} · {{ pace.stock }} in stock
+                        {{ pace.label }} · you hold {{ pace.stock }} · pool {{ pace.poolStock }}
                     </option>
                 </select>
             </AppField>
@@ -220,11 +222,11 @@ async function submit() {
             </AppField>
 
             <p v-if="linkedPace" class="muted note">
-                When your admin marks this request as given, the booklets are added to the stock of
-                PACE {{ linkedPace.label }} (now {{ linkedPace.stock }}).
+                When your admin gives this request, the booklets move from the branch pool
+                (now {{ linkedPace.poolStock }}) to your stock of PACE {{ linkedPace.label }} (now {{ linkedPace.stock }}).
             </p>
             <p v-else class="muted note">
-                Not linked to a registered PACE: once the booklets arrive, register the PACE (or set its stock) yourself.
+                Not in the catalog yet: your admin adds the PACE to the branch catalog when giving the booklets.
             </p>
 
             <div class="actions">

@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue';
 import { adminService, referenceService } from '../../services';
+import { useAuthStore } from '../../stores/auth';
 import { formatScore, pluralize } from '../../core/format';
 import { buildRecordRings } from '../../core/recordRings';
 import SubjectFormModal from '../gradeLevels/SubjectFormModal.vue';
@@ -10,9 +11,11 @@ import PaceRecordsExplorer from '../assignments/PaceRecordsExplorer.vue';
 
 const props = defineProps({
     id: { type: Number, required: true },
-    /** Read-only admin view: loads through the admin API, no editing, admin page links. */
+    /** Admin view: loads through the admin API, can rename the subject, admin page links. */
     admin: { type: Boolean, default: false },
 });
+
+const auth = useAuthStore();
 
 const gradeLevelRoute = computed(() => (props.admin ? 'admin-grade-level-detail' : 'grade-level-detail'));
 
@@ -25,6 +28,11 @@ const loadError = ref('');
 const editOpen = ref(false);
 
 const records = computed(() => subject.value?.assignments ?? []);
+
+/** Who teaches this subject in each section, by section name. */
+const taughtIn = computed(() => (subject.value?.teachingAssignments ?? [])
+    .map((assignment) => ({ id: assignment.id, sectionId: assignment.sectionId, section: assignment.sectionName, teacher: assignment.teacher }))
+    .sort((a, b) => String(a.section).localeCompare(String(b.section))));
 
 /** Layered rings (assigned / issued / tested / pass / retakes / fail) for every record under the subject. */
 const recordRings = computed(() => buildRecordRings(records.value));
@@ -42,6 +50,17 @@ const averageAll = computed(() => {
     const sum = records.value.reduce((carry, record) => carry + (Number(record.score) || 0), 0);
 
     return sum / records.value.length;
+});
+
+/** "School · Grade 1 · Math": the platform owner looks at subjects of many schools, so the school and grade level lead. */
+const heading = computed(() => {
+    if (!subject.value) {
+        return '';
+    }
+
+    const school = auth.isPlatform ? subject.value.organizationName : '';
+
+    return [school, subject.value.gradeLevelName, subject.value.name].filter(Boolean).join(' · ');
 });
 
 const subtitle = computed(() => {
@@ -91,14 +110,14 @@ onMounted(load);
             <RouterLink v-if="subject?.gradeLevelId" :to="{ name: gradeLevelRoute, params: { id: subject.gradeLevelId } }">
                 &larr; {{ subject.gradeLevelName || 'Grade level' }}
             </RouterLink>
-            <RouterLink v-else :to="{ name: admin ? 'admin-users' : 'grade-levels' }">&larr; {{ admin ? 'Users' : 'Grade levels' }}</RouterLink>
+            <RouterLink v-else :to="{ name: admin ? 'admin-grade-levels' : 'classes' }">&larr; {{ admin ? 'Grade Levels' : 'My classes' }}</RouterLink>
         </p>
 
         <p v-if="loading" class="muted">Loading…</p>
 
         <EmptyState v-else-if="!subject" :message="loadError">
             <template #action>
-                <RouterLink :to="{ name: admin ? 'admin-users' : 'grade-levels' }" class="btn btn-secondary btn-sm">{{ admin ? 'Back to users' : 'Back to grade levels' }}</RouterLink>
+                <RouterLink :to="{ name: admin ? 'admin-grade-levels' : 'classes' }" class="btn btn-secondary btn-sm">{{ admin ? 'Back to grade levels' : 'Back to my classes' }}</RouterLink>
             </template>
         </EmptyState>
 
@@ -106,10 +125,10 @@ onMounted(load);
             <!-- The subject's name stays pinned under the top bar while the page scrolls. -->
             <div class="page-header">
                 <div>
-                    <h1>{{ subject.name }}</h1>
+                    <h1>{{ heading }}</h1>
                     <p class="muted subtitle">{{ subtitle }}</p>
                 </div>
-                <div v-if="!admin" class="page-actions">
+                <div v-if="admin" class="page-actions">
                     <button type="button" class="btn btn-secondary" @click="editOpen = true">Edit</button>
                 </div>
             </div>
@@ -132,19 +151,24 @@ onMounted(load);
                             <dt>School year</dt>
                             <dd class="mono">{{ subject.schoolYearName || '—' }}</dd>
                         </div>
-                        <!-- Admin view: whose subject this is, and the branch that teacher works in. -->
-                        <div v-if="admin" class="info-item">
-                            <dt>Teacher</dt>
-                            <dd>
-                                <RouterLink v-if="subject.teacher" :to="{ name: 'admin-user-detail', params: { id: subject.teacher.id } }">
-                                    {{ subject.teacherName }}
-                                </RouterLink>
-                                <span v-else>—</span>
-                            </dd>
-                        </div>
-                        <div v-if="admin" class="info-item">
+                        <div class="info-item">
                             <dt>Branch</dt>
-                            <dd>{{ subject.teacherBranchName || '—' }}</dd>
+                            <dd>{{ subject.branchName || '—' }}</dd>
+                        </div>
+                        <div class="info-item info-wide">
+                            <dt>Taught in</dt>
+                            <dd>
+                                <span v-if="taughtIn.length === 0" class="muted">No section has a teacher for it yet.</span>
+                                <ul v-else class="taught-in">
+                                    <li v-for="item in taughtIn" :key="item.id">
+                                        <RouterLink v-if="admin && item.sectionId" :to="{ name: 'admin-section-detail', params: { id: item.sectionId } }">{{ item.section }}</RouterLink>
+                                        <span v-else>{{ item.section }}</span>
+                                        <span class="muted"> · </span>
+                                        <RouterLink v-if="admin && item.teacher" :to="{ name: 'admin-user-detail', params: { id: item.teacher.id } }">{{ item.teacher.name }}</RouterLink>
+                                        <span v-else>{{ item.teacher?.name || '—' }}</span>
+                                    </li>
+                                </ul>
+                            </dd>
                         </div>
                         <div class="info-item">
                             <dt>PACE records</dt>
@@ -179,7 +203,7 @@ onMounted(load);
                 empty-message="No PACE records have been filed under this subject yet."
             />
 
-            <SubjectFormModal v-if="!admin" v-model="editOpen" :grade-level="subject.gradeLevel" :subject="subject" @saved="load" />
+            <SubjectFormModal v-if="admin" v-model="editOpen" kind="subject" :grade-level="subject.gradeLevel" :record="subject" @saved="load" />
         </template>
     </div>
 </template>
@@ -254,6 +278,20 @@ dl.info {
 
 .info-item dd {
     margin: 0;
+}
+
+.info-wide {
+    grid-column: 1 / -1;
+}
+
+.taught-in {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.taught-in li + li {
+    margin-top: 2px;
 }
 
 .average {

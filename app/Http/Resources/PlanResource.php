@@ -29,6 +29,8 @@ class PlanResource extends JsonResource
             'currency' => $this->currency,
             'is_active' => (bool) $this->is_active,
             'sort_order' => $this->sort_order,
+            // The plan a new school's free trial runs on (its limits apply until a paid plan is approved).
+            'is_trial_default' => $this->slug === config('saas.default_plan', 'starter'),
             'subscriptions_count' => $this->whenCounted('subscriptions'),
             'plan_requests_count' => $this->whenCounted('planRequests'),
             'created_at' => $this->created_at?->toISOString(),

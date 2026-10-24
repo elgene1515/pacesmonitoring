@@ -5,10 +5,11 @@ import { SEX_OPTIONS } from '../../models';
 import { useStudentsStore } from '../../stores/students';
 import { useReferenceStore } from '../../stores/reference';
 import { useSchoolYearsStore } from '../../stores/schoolYears';
-import { notify } from '../../stores/notifications';
+import { useStudentChangeRequestsStore } from '../../stores/studentChangeRequests';
+import { useAuthStore } from '../../stores/auth';
 import { formatDate, formatScore, pluralize } from '../../core/format';
 import StudentFormModal from '../students/StudentFormModal.vue';
-import ConfirmDialog from '../ui/ConfirmDialog.vue';
+import StudentChangeModal from '../students/StudentChangeModal.vue';
 import EmptyState from '../ui/EmptyState.vue';
 import AppIcon from '../ui/AppIcon.vue';
 import PaceRecordsBar from '../charts/PaceRecordsBar.vue';
@@ -20,15 +21,16 @@ const RECORD_ORDER = ['tested', 'issued', 'assigned'];
 const students = useStudentsStore();
 const reference = useReferenceStore();
 const schoolYears = useSchoolYearsStore();
+const changeRequests = useStudentChangeRequestsStore();
+const auth = useAuthStore();
 const route = useRoute();
 
 /** `?school_year=` (links from the School years page) preselects the school year filter. */
 const requestedYear = Number(route.query.school_year) || null;
 
 const modalOpen = ref(false);
-const editing = ref(null);
-const deleting = ref(null);
-const removing = ref(false);
+const changeOpen = ref(false);
+const proposing = ref(null);
 
 let searchTimer = null;
 
@@ -58,7 +60,7 @@ const scoreRange = computed(() => {
 });
 
 const hasFilters = computed(() => students.filters.search.trim() !== ''
-    || students.filters.grade_level_id !== ''
+    || students.filters.section_id !== ''
     || students.filters.school_year_id !== ''
     || sexFilter.value !== ''
     || scoreRange.value.min !== null
@@ -87,15 +89,15 @@ const visibleStudents = computed(() => {
     return list;
 });
 
-/** Grade levels offered by the filter: those of the chosen school year, or all (labelled with their year). */
-const gradeLevelOptions = computed(() => reference.gradeLevelsFor(students.filters.school_year_id));
+/** Sections offered by the filter: the teacher's classes of the chosen school year, or all (labelled with their year). */
+const sectionOptions = computed(() => reference.sectionsForYear(students.filters.school_year_id));
 
-/** Changing the school year filter drops a grade level filter from another year. */
+/** Changing the school year filter drops a section filter from another year. */
 function onYearFilterChange() {
-    const level = reference.gradeLevelById(students.filters.grade_level_id);
+    const section = reference.sectionById(students.filters.section_id);
 
-    if (level && students.filters.school_year_id !== '' && level.schoolYearId !== Number(students.filters.school_year_id)) {
-        students.filters.grade_level_id = '';
+    if (section && students.filters.school_year_id !== '' && section.gradeLevel?.schoolYearId !== Number(students.filters.school_year_id)) {
+        students.filters.section_id = '';
     }
 
     students.fetch();
@@ -103,18 +105,17 @@ function onYearFilterChange() {
 
 const emptyMessage = computed(() => (hasFilters.value ? 'No students match your filters.' : 'No students yet.'));
 
-function gradeName(student) {
-    return student.gradeLevelName || reference.gradeLevelName(student.gradeLevelId) || '—';
+function className(student) {
+    return student.classLabel || reference.sectionById(student.sectionId)?.label || '—';
 }
 
 function openCreate() {
-    editing.value = null;
     modalOpen.value = true;
 }
 
-function openEdit(student) {
-    editing.value = student;
-    modalOpen.value = true;
+function openPropose(student) {
+    proposing.value = student;
+    changeOpen.value = true;
 }
 
 function onSaved() {
@@ -129,25 +130,6 @@ function clearFilters() {
     students.fetch();
 }
 
-async function confirmRemove() {
-    if (removing.value || !deleting.value) {
-        return;
-    }
-
-    const target = deleting.value;
-    removing.value = true;
-
-    try {
-        await students.remove(target.id);
-        notify.success(`${target.displayName} deleted.`);
-        deleting.value = null;
-    } catch (err) {
-        notify.error(err?.message ?? 'Unable to delete the student.');
-    } finally {
-        removing.value = false;
-    }
-}
-
 watch(
     () => students.filters.search,
     () => {
@@ -159,7 +141,8 @@ watch(
 onMounted(() => {
     reference.load();
     schoolYears.load();
-    students.fetch(requestedYear ? { school_year_id: requestedYear, grade_level_id: '' } : {});
+    changeRequests.fetch();
+    students.fetch(requestedYear ? { school_year_id: requestedYear, section_id: '', grade_level_id: '' } : {});
 });
 
 onBeforeUnmount(() => {
@@ -170,9 +153,22 @@ onBeforeUnmount(() => {
 <template>
     <div class="students">
         <div class="page-header">
-            <h1>Students</h1>
+            <div>
+                <h1>Students</h1>
+                <p class="muted subtitle">The students of the sections you teach, shared with their other teachers.</p>
+            </div>
             <div class="page-actions">
-                <button type="button" class="btn" @click="openCreate">Add student</button>
+                <RouterLink :to="{ name: 'student-change-requests' }" class="btn btn-secondary">
+                    Proposed changes
+                    <span
+                        v-if="changeRequests.pendingCount > 0"
+                        class="count-badge"
+                        :title="pluralize(changeRequests.pendingCount, 'pending proposal')"
+                    >
+                        {{ changeRequests.pendingCount }}
+                    </span>
+                </RouterLink>
+                <button type="button" class="btn" :disabled="!auth.canWrite" @click="openCreate">Enroll student</button>
             </div>
         </div>
 
@@ -184,8 +180,8 @@ onBeforeUnmount(() => {
                         v-model="students.filters.search"
                         class="input search"
                         type="search"
-                        placeholder="Search by name"
-                        aria-label="Search students"
+                        placeholder="Search by name or student ID"
+                        aria-label="Search students by name or student ID"
                     />
                     <select
                         v-model="students.filters.school_year_id"
@@ -199,14 +195,14 @@ onBeforeUnmount(() => {
                         </option>
                     </select>
                     <select
-                        v-model="students.filters.grade_level_id"
+                        v-model="students.filters.section_id"
                         class="input select"
-                        aria-label="Filter by grade level"
+                        aria-label="Filter by section"
                         @change="students.fetch()"
                     >
-                        <option value="">All grade levels</option>
-                        <option v-for="level in gradeLevelOptions" :key="level.id" :value="level.id">
-                            {{ students.filters.school_year_id ? level.name : level.labelWithYear }}
+                        <option value="">All my sections</option>
+                        <option v-for="section in sectionOptions" :key="section.id" :value="section.id">
+                            {{ students.filters.school_year_id ? section.label : section.labelWithYear }}
                         </option>
                     </select>
                     <select v-model="sexFilter" class="input select select-sm" aria-label="Filter by sex">
@@ -254,19 +250,19 @@ onBeforeUnmount(() => {
             <p v-if="students.loading && !students.loaded" class="muted state">Loading…</p>
 
             <EmptyState
-                v-else-if="students.items.length === 0 && !hasFilters && reference.loaded && !reference.hasGradeLevels"
-                message="Before adding students, create a grade level and the subjects taught in it."
+                v-else-if="students.items.length === 0 && !hasFilters && reference.loaded && !reference.hasSections"
+                message="You are not teaching any class yet. Your school admin assigns classes; you can also ask for an open one."
             >
                 <template #action>
-                    <RouterLink :to="{ name: 'grade-levels' }" class="btn btn-secondary btn-sm">
-                        Set up grade levels
+                    <RouterLink :to="{ name: 'teaching-requests' }" class="btn btn-secondary btn-sm">
+                        Request a class
                     </RouterLink>
                 </template>
             </EmptyState>
 
             <EmptyState v-else-if="visibleStudents.length === 0" :message="emptyMessage">
                 <template v-if="!hasFilters" #action>
-                    <button type="button" class="btn btn-secondary btn-sm" @click="openCreate">Add student</button>
+                    <button type="button" class="btn btn-secondary btn-sm" :disabled="!auth.canWrite" @click="openCreate">Enroll student</button>
                 </template>
             </EmptyState>
 
@@ -274,6 +270,7 @@ onBeforeUnmount(() => {
                 <table class="table">
                     <!-- Fixed column widths so every column lines up down the page. -->
                     <colgroup>
+                        <col class="col-student-id" />
                         <col class="col-name" />
                         <col class="col-grade" />
                         <col class="col-year" />
@@ -286,8 +283,9 @@ onBeforeUnmount(() => {
                     </colgroup>
                     <thead>
                         <tr>
+                            <th>Student ID</th>
                             <th>Name</th>
-                            <th>Grade level</th>
+                            <th>Class</th>
                             <th>School year</th>
                             <th>Sex</th>
                             <th>Age</th>
@@ -299,12 +297,16 @@ onBeforeUnmount(() => {
                     </thead>
                     <tbody>
                         <tr v-for="student in visibleStudents" :key="student.id">
+                            <td class="mono ellipsis" :title="student.studentNumber || ''">
+                                <span v-if="student.studentNumber">{{ student.studentNumber }}</span>
+                                <span v-else class="muted">—</span>
+                            </td>
                             <td class="name-cell">
                                 <RouterLink :to="{ name: 'student-detail', params: { id: student.id } }" class="name">
                                     {{ student.fullName }}
                                 </RouterLink>
                             </td>
-                            <td class="ellipsis">{{ gradeName(student) }}</td>
+                            <td class="ellipsis" :title="className(student)">{{ className(student) }}</td>
                             <td class="mono">{{ student.schoolYearName || '—' }}</td>
                             <td>{{ student.sexLabel }}</td>
                             <td class="mono">{{ student.age ?? '—' }}</td>
@@ -335,20 +337,12 @@ onBeforeUnmount(() => {
                                 <button
                                     type="button"
                                     class="btn btn-link btn-sm btn-icon"
-                                    :title="`Edit ${student.displayName}`"
-                                    :aria-label="`Edit ${student.displayName}`"
-                                    @click="openEdit(student)"
+                                    :title="changeRequests.pendingFor(student.id) ? 'Changes already proposed; waiting for your admin' : `Propose changes to ${student.displayName}`"
+                                    :aria-label="`Propose changes to ${student.displayName}`"
+                                    :disabled="!auth.canWrite || Boolean(changeRequests.pendingFor(student.id))"
+                                    @click="openPropose(student)"
                                 >
                                     <AppIcon name="pencil" />
-                                </button>
-                                <button
-                                    type="button"
-                                    class="btn btn-link btn-sm btn-icon text-danger"
-                                    :title="`Delete ${student.displayName}`"
-                                    :aria-label="`Delete ${student.displayName}`"
-                                    @click="deleting = student"
-                                >
-                                    <AppIcon name="trash" />
                                 </button>
                             </td>
                         </tr>
@@ -357,22 +351,34 @@ onBeforeUnmount(() => {
             </div>
         </div>
 
-        <StudentFormModal v-model="modalOpen" :student="editing" @saved="onSaved" />
+        <StudentFormModal v-model="modalOpen" :section-id="students.filters.section_id || null" @saved="onSaved" />
 
-        <ConfirmDialog
-            :model-value="deleting !== null"
-            title="Delete student"
-            :busy="removing"
-            @update:model-value="deleting = null"
-            @confirm="confirmRemove"
-        >
-            Delete <strong v-if="deleting">{{ deleting.displayName }}</strong>? All of their PACE records will be deleted as well.
-            This cannot be undone.
-        </ConfirmDialog>
+        <StudentChangeModal v-model="changeOpen" :student="proposing" />
+
     </div>
 </template>
 
 <style scoped>
+.subtitle {
+    margin: 4px 0 0;
+}
+
+.count-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    margin-left: 2px;
+    border-radius: 999px;
+    background: var(--danger);
+    color: var(--on-danger);
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1;
+}
+
 .card {
     padding: 0;
     overflow: hidden;
@@ -450,12 +456,16 @@ onBeforeUnmount(() => {
 }
 
 .table {
-    min-width: 1040px;
+    min-width: 1150px;
     table-layout: fixed;
 }
 
+.col-student-id {
+    width: 110px;
+}
+
 .col-grade {
-    width: 130px;
+    width: 170px;
 }
 
 .col-year {
@@ -483,7 +493,7 @@ onBeforeUnmount(() => {
 }
 
 .col-actions {
-    width: 124px;
+    width: 90px;
 }
 
 .name {

@@ -52,14 +52,32 @@ class PaceAssignment extends Model
     ];
 
     /**
-     * Only assignments that belong to students registered by the given user.
+     * Only assignments the given teacher is in charge of: the record's subject
+     * is one they are assigned to teach in the student's section.
      *
      * @param  \Illuminate\Database\Eloquent\Builder<\App\Models\PaceAssignment>  $query
      * @return \Illuminate\Database\Eloquent\Builder<\App\Models\PaceAssignment>
      */
     public function scopeOwnedBy(Builder $query, User|int $user): Builder
     {
-        return $query->whereHas('student', fn (Builder $student) => $student->ownedBy($user));
+        $id = $user instanceof User ? $user->getKey() : $user;
+
+        return $query->whereHas('student.section.teachingAssignments', function (Builder $assignment) use ($id) {
+            $assignment
+                ->where('teaching_assignments.teacher_id', $id)
+                ->whereColumn('teaching_assignments.subject_id', 'pace_assignments.subject_id');
+        });
+    }
+
+    /**
+     * Only assignments of students in the given organization (null matches nothing).
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder<\App\Models\PaceAssignment>  $query
+     * @return \Illuminate\Database\Eloquent\Builder<\App\Models\PaceAssignment>
+     */
+    public function scopeForOrganization(Builder $query, Organization|int|null $organization): Builder
+    {
+        return $query->whereHas('student', fn (Builder $student) => $student->forOrganization($organization));
     }
 
     /**

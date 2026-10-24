@@ -34,4 +34,8 @@ return [
 
     'support_email' => env('SAAS_SUPPORT_EMAIL', 'support@example.com'),
 
+    // Version of the Terms of Service and Privacy Policy shown at sign-up; it is stored
+    // with each acceptance. Change it when the texts change materially.
+    'terms_version' => env('SAAS_TERMS_VERSION', '2026-10-23'),
+
 ];

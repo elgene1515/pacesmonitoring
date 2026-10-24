@@ -33,6 +33,8 @@ class OrganizationResource extends JsonResource
             'pending_join_requests_count' => $this->whenCounted('pendingJoinRequests'),
             'pending_plan_requests_count' => $this->whenCounted('pendingPlanRequests'),
             'pending_pace_requests_count' => $this->whenCounted('pendingPaceRequests'),
+            'pending_teaching_assignment_requests_count' => $this->whenCounted('pendingTeachingAssignmentRequests'),
+            'pending_student_change_requests_count' => $this->whenCounted('pendingStudentChangeRequests'),
             'plan_requests' => PlanRequestResource::collection($this->whenLoaded('planRequests')),
             'deleted_at' => $this->deleted_at?->toISOString(),
             'is_deleted' => $this->trashed(),

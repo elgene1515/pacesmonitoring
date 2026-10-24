@@ -26,6 +26,8 @@ export default class Organization {
         pendingJoinRequestsCount = null,
         pendingPlanRequestsCount = null,
         pendingPaceRequestsCount = null,
+        pendingTeachingAssignmentRequestsCount = null,
+        pendingStudentChangeRequestsCount = null,
         planRequests = [],
         deletedAt = null,
         isDeleted = false,
@@ -54,6 +56,10 @@ export default class Organization {
         this.pendingPlanRequestsCount = pendingPlanRequestsCount;
         /** Teachers' PACE stock requests waiting for the school's admins. */
         this.pendingPaceRequestsCount = pendingPaceRequestsCount;
+        /** Teachers' requests for open class slots waiting for the admin. */
+        this.pendingTeachingAssignmentRequestsCount = pendingTeachingAssignmentRequestsCount;
+        /** Teachers' proposed student edits waiting for the admin. */
+        this.pendingStudentChangeRequestsCount = pendingStudentChangeRequestsCount;
         /** PlanRequest[] when loaded (owner pages). */
         this.planRequests = planRequests;
         /** Set once the owner deactivated the school (soft delete). */
@@ -100,6 +106,16 @@ export default class Organization {
         return this.subscription?.plan?.maxTeachers ?? null;
     }
 
+    /** Admin limit of the current plan, or null when unlimited / unknown. */
+    get adminLimit() {
+        return this.subscription?.plan?.maxAdmins ?? null;
+    }
+
+    /** No more administrators fit the plan (false when the limit or the count is unknown). */
+    get adminLimitReached() {
+        return this.adminLimit !== null && this.adminsCount !== null && this.adminsCount >= this.adminLimit;
+    }
+
     get studentLimit() {
         return this.subscription?.plan?.maxStudents ?? null;
     }
@@ -127,6 +143,8 @@ export default class Organization {
             pendingJoinRequestsCount: count(json.pending_join_requests_count),
             pendingPlanRequestsCount: count(json.pending_plan_requests_count),
             pendingPaceRequestsCount: count(json.pending_pace_requests_count),
+            pendingTeachingAssignmentRequestsCount: count(json.pending_teaching_assignment_requests_count),
+            pendingStudentChangeRequestsCount: count(json.pending_student_change_requests_count),
             planRequests: PlanRequest.collection(json.plan_requests),
             deletedAt: json.deleted_at ?? null,
             isDeleted: Boolean(json.is_deleted),

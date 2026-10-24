@@ -8,12 +8,18 @@ use App\Models\GradeLevel;
 use App\Models\Pace;
 use App\Models\PaceAssignment;
 use App\Models\SchoolYear;
+use App\Models\Section;
 use App\Models\Student;
 use App\Models\Subject;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 
+/**
+ * The teacher's Home page: counts and breakdowns over what their teaching
+ * assignments cover — the students of the sections they teach and the PACE
+ * records of the subjects they are in charge of.
+ */
 class DashboardService
 {
     /**
@@ -39,37 +45,25 @@ class DashboardService
     public const TOP_PERFORMER_MIN_SCORED = 3;
 
     /**
-     * Headline counts, breakdowns and recent students for one user, limited to a
-     * school year when one is given:
+     * Headline counts, breakdowns and recent students for one teacher, limited
+     * to a school year when one is given:
      *
-     *  - grade_levels / students / by_grade_level: registered under that school year
-     *  - assignments / tested / scored / passed / by_quarter / by_subject: PACE records filed under that school year
-     *  - paces: a PACE is not tied to a school year, so this is always the all-time count
-     *  - year_trend: always every school year the user has, regardless of the selection
+     *  - grade_levels / sections / students / by_grade_level: registered under that school year
+     *  - assignments / tested / scored / passed / by_quarter / by_subject: the teacher's records filed under that school year
+     *  - paces: the branch catalog is not tied to a school year, so this is the full count until a class / subject / PACE filter is set
+     *  - year_trend: every school year of the organization, regardless of the school year selection (it follows the other filters)
      *
-     * `totals` always holds the user's all-time counts (used by the setup checklist).
+     * `totals` always holds the teacher's all-time counts (used by the setup checklist).
      *
-     * Optional filters narrow the figures further:
-     *  - grade_level_id: that grade level's students and the records under its subjects
-     *  - subject_id: only the records filed under that subject
-     *  - pace_id: only the records of that PACE (and just that PACE in the PACE count)
+     * Optional filters narrow EVERY figure, not just the records:
+     *  - grade_level_id: that grade level's sections and students, and the records under its subjects
+     *  - section_id: that section's students and their records
+     *  - subject_id: the records filed under that subject, the students who take it and the sections the teacher teaches it in
+     *  - pace_id: the records of that PACE, the students who have it and their sections (and just that PACE in the PACE count)
+     * With a class or subject filter the PACE count is the PACEs used in the matching records.
      *
-     * @param  array{grade_level_id?: int|string|null, subject_id?: int|string|null, pace_id?: int|string|null}  $filters
-     *
-     * @return array{
-     *     school_year: ?\App\Models\SchoolYear,
-     *     grade_levels: int, students: int, paces: int, assignments: int, tested: int, scored: int, passed: int,
-     *     issued: int, assigned: int, retakes: int, failed_count: int,
-     *     recent_students: \Illuminate\Database\Eloquent\Collection<int, \App\Models\Student>,
-     *     by_quarter: array<int, array{quarter: int, total: int, tested: int, issued: int, assigned: int, passed: int, failed: int, retakes: int}>,
-     *     by_subject: array<int, array{id: int, name: string, grade_level_name: string, total: int, tested: int, issued: int, assigned: int, average_score: ?float}>,
-     *     by_grade_level: array<int, array{id: int, name: string, total: int, male: int, female: int}>,
-     *     year_trend: array<int, array{school_year: string, assignments: int, tested: int}>,
-     *     failed: array<int, array{id: int, student_id: int, student_name: string, subject_name: string, pace_number: string, pace_name: string, score: ?float, failed: bool, retake: bool, quarter: int, school_year: string, date_tested: ?string}>,
-     *     top_performers: array<int, array{student_id: int, student_name: string, average_score: float, scored_count: int, passed_count: int, failed_count: int, retake_count: int}>,
-     *     score_distribution: array<int, array{label: string, total: int}>,
-     *     totals: array{school_years: int, grade_levels: int, students: int, paces: int, assignments: int},
-     * }
+     * @param  array{grade_level_id?: int|string|null, section_id?: int|string|null, subject_id?: int|string|null, pace_id?: int|string|null}  $filters
+     * @return array<string, mixed>
      */
     public function summary(User $user, ?SchoolYear $schoolYear = null, array $filters = []): array
     {
@@ -86,31 +80,61 @@ class DashboardService
             ->ownedBy($user)
             ->when($schoolYear !== null, fn ($query) => $query->where('grade_levels.school_year_id', $schoolYear->id));
 
+        $sections = Section::query()
+            ->ownedBy($user)
+            ->when($schoolYear !== null, fn ($query) => $query->whereHas('gradeLevel', fn (Builder $level) => $level->where('school_year_id', $schoolYear->id)));
+
         $gradeLevelId = $this->filterId($filters, 'grade_level_id');
+        $sectionId = $this->filterId($filters, 'section_id');
         $subjectId = $this->filterId($filters, 'subject_id');
         $paceId = $this->filterId($filters, 'pace_id');
 
+        // The records follow every filter (the same rule feeds the year trend below).
+        $this->narrowAssignments($assignments, $gradeLevelId, $sectionId, $subjectId, $paceId);
+
         if ($gradeLevelId !== null) {
             $gradeLevels->where('grade_levels.id', $gradeLevelId);
-            $students->where('students.grade_level_id', $gradeLevelId);
-            $assignments->whereIn(
-                'pace_assignments.subject_id',
-                Subject::query()->where('grade_level_id', $gradeLevelId)->select('id')
-            );
+            $sections->where('sections.grade_level_id', $gradeLevelId);
+            $students->whereHas('section', fn (Builder $section) => $section->where('grade_level_id', $gradeLevelId));
         }
 
+        if ($sectionId !== null) {
+            $sections->where('sections.id', $sectionId);
+            $students->where('students.section_id', $sectionId);
+        }
+
+        // The counts that do not come from the records follow the subject and PACE filters too:
+        // a subject keeps the students who take it and the sections the teacher teaches it in; a
+        // PACE keeps the students who have a (matching) record of it and their sections.
         if ($subjectId !== null) {
-            $assignments->where('pace_assignments.subject_id', $subjectId);
+            $students->whereHas('subjects', fn (Builder $subject) => $subject->where('subjects.id', $subjectId));
+            $sections->whereHas('teachingAssignments', fn (Builder $assignment) => $assignment
+                ->where('teaching_assignments.teacher_id', $user->id)
+                ->where('teaching_assignments.subject_id', $subjectId));
         }
 
         if ($paceId !== null) {
             $paces->where('paces.id', $paceId);
-            $assignments->where('pace_assignments.pace_id', $paceId);
+            $students->whereIn('students.id', (clone $assignments)->select('pace_assignments.student_id'));
+            $sections->whereHas('students', fn (Builder $enrolled) => $enrolled
+                ->whereIn('students.id', (clone $students)->select('students.id')));
+        }
+
+        // With a class or subject filter, the PACEs counted are the ones used in the matching records.
+        if ($gradeLevelId !== null || $sectionId !== null || $subjectId !== null) {
+            $paces->whereIn('paces.id', (clone $assignments)->select('pace_assignments.pace_id'));
+        }
+
+        // Grade levels (and so the "Students by grade level" chart) keep only those with a remaining section.
+        if ($sectionId !== null || $subjectId !== null || $paceId !== null) {
+            $gradeLevels->whereHas('sections', fn (Builder $section) => $section
+                ->whereIn('sections.id', (clone $sections)->select('sections.id')));
         }
 
         return [
             'school_year' => $schoolYear,
             'grade_levels' => (clone $gradeLevels)->count(),
+            'sections' => (clone $sections)->count(),
             'students' => (clone $students)->count(),
             'paces' => (clone $paces)->count(),
             'assignments' => (clone $assignments)->count(),
@@ -126,19 +150,59 @@ class DashboardService
             'recent_students' => $this->recentStudents($students),
             'by_quarter' => $this->byQuarter(clone $assignments),
             'by_subject' => $this->bySubject(clone $assignments),
-            'by_grade_level' => $this->byGradeLevel(clone $gradeLevels),
-            'year_trend' => $this->yearTrend($user),
+            // The students counted per grade level are the ones left after every filter.
+            'by_grade_level' => $this->byGradeLevel(
+                clone $gradeLevels,
+                fn (Builder $query) => $query->whereIn('students.id', (clone $students)->select('students.id'))
+            ),
+            'year_trend' => $this->yearTrend($user, $gradeLevelId, $sectionId, $subjectId, $paceId),
             'failed' => $this->failedAssignments(clone $assignments),
             'top_performers' => $this->topPerformers(clone $assignments),
             'score_distribution' => $this->scoreDistribution(clone $assignments),
             'totals' => [
                 'school_years' => SchoolYear::query()->ownedBy($user)->count(),
                 'grade_levels' => GradeLevel::query()->ownedBy($user)->count(),
+                'sections' => Section::query()->ownedBy($user)->count(),
                 'students' => Student::query()->ownedBy($user)->count(),
                 'paces' => Pace::query()->ownedBy($user)->count(),
                 'assignments' => PaceAssignment::query()->ownedBy($user)->count(),
             ],
         ];
+    }
+
+    /**
+     * Narrow a PaceAssignment query by the class / subject / PACE filters:
+     * a grade level keeps the records under its subjects, a section the records
+     * of its students, a subject and a PACE their own records.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder<\App\Models\PaceAssignment>  $assignments
+     * @return \Illuminate\Database\Eloquent\Builder<\App\Models\PaceAssignment>
+     */
+    protected function narrowAssignments(Builder $assignments, ?int $gradeLevelId, ?int $sectionId, ?int $subjectId, ?int $paceId): Builder
+    {
+        if ($gradeLevelId !== null) {
+            $assignments->whereIn(
+                'pace_assignments.subject_id',
+                Subject::query()->where('grade_level_id', $gradeLevelId)->select('id')
+            );
+        }
+
+        if ($sectionId !== null) {
+            $assignments->whereIn(
+                'pace_assignments.student_id',
+                Student::query()->where('section_id', $sectionId)->select('id')
+            );
+        }
+
+        if ($subjectId !== null) {
+            $assignments->where('pace_assignments.subject_id', $subjectId);
+        }
+
+        if ($paceId !== null) {
+            $assignments->where('pace_assignments.pace_id', $paceId);
+        }
+
+        return $assignments;
     }
 
     /**
@@ -158,7 +222,7 @@ class DashboardService
     }
 
     /**
-     * The latest registered students (within the given scope) with their grade level.
+     * The latest enrolled students (within the given scope) with their section and grade level.
      *
      * @param  \Illuminate\Database\Eloquent\Builder<\App\Models\Student>  $students
      * @return \Illuminate\Database\Eloquent\Collection<int, \App\Models\Student>
@@ -166,9 +230,9 @@ class DashboardService
     protected function recentStudents(Builder $students): Collection
     {
         return (clone $students)
-            ->with(['gradeLevel', 'schoolYear'])
-            ->orderByDesc('created_at')
-            ->orderByDesc('id')
+            ->with(['section.gradeLevel', 'schoolYear'])
+            ->orderByDesc('students.created_at')
+            ->orderByDesc('students.id')
             ->limit(self::RECENT_LIMIT)
             ->get();
     }
@@ -237,19 +301,21 @@ class DashboardService
      * subjects in different grade levels don't look identical.
      *
      * @param  \Illuminate\Database\Eloquent\Builder<\App\Models\PaceAssignment>  $assignments
-     * @return array<int, array{id: int, name: string, grade_level_name: string, total: int, tested: int, issued: int, assigned: int, average_score: ?float}>
+     * @return array<int, array{id: int, name: string, grade_level_name: string, branch_name: string, organization_name: string, total: int, tested: int, issued: int, assigned: int, average_score: ?float}>
      */
     public function bySubject(Builder $assignments): array
     {
         return $assignments
             ->join('subjects', 'subjects.id', '=', 'pace_assignments.subject_id')
             ->join('grade_levels', 'grade_levels.id', '=', 'subjects.grade_level_id')
-            ->selectRaw('subjects.id as id, subjects.name as name, grade_levels.name as grade_level_name, count(*) as total')
+            ->leftJoin('branches', 'branches.id', '=', 'grade_levels.branch_id')
+            ->leftJoin('organizations', 'organizations.id', '=', 'branches.organization_id')
+            ->selectRaw('subjects.id as id, subjects.name as name, grade_levels.name as grade_level_name, branches.name as branch_name, organizations.name as organization_name, count(*) as total')
             ->selectRaw('sum(case when date_tested is not null or score is not null then 1 else 0 end) as tested')
             ->selectRaw('sum(case when date_tested is null and score is null and issued_date is not null then 1 else 0 end) as issued')
             // Average over every record: assigned / issued PACEs without a score count as 0.
             ->selectRaw('avg(coalesce(pace_assignments.score, 0)) as average_score')
-            ->groupBy('subjects.id', 'subjects.name', 'grade_levels.name')
+            ->groupBy('subjects.id', 'subjects.name', 'grade_levels.name', 'branches.name', 'organizations.name')
             ->orderByDesc('total')
             ->get()
             ->map(function ($row) {
@@ -261,6 +327,8 @@ class DashboardService
                     'id' => (int) $row->id,
                     'name' => $row->name,
                     'grade_level_name' => $row->grade_level_name,
+                    'branch_name' => $row->branch_name ?? '',
+                    'organization_name' => $row->organization_name ?? '',
                     'total' => $total,
                     'tested' => $tested,
                     'issued' => $issued,
@@ -272,25 +340,39 @@ class DashboardService
     }
 
     /**
-     * Student counts per grade level (total plus boys / girls), in grade-level display order.
+     * Student counts per grade level (total plus boys / girls), in grade-level
+     * display order. `$studentScope` narrows which students count (e.g. only
+     * the sections one teacher teaches).
      *
      * @param  \Illuminate\Database\Eloquent\Builder<\App\Models\GradeLevel>  $gradeLevels
-     * @return array<int, array{id: int, name: string, total: int, male: int, female: int}>
+     * @param  (callable(\Illuminate\Database\Eloquent\Builder<\App\Models\Student>): mixed)|null  $studentScope
+     * @return array<int, array{id: int, name: string, branch_name: string, organization_name: string, total: int, male: int, female: int}>
      */
-    public function byGradeLevel(Builder $gradeLevels): array
+    public function byGradeLevel(Builder $gradeLevels, ?callable $studentScope = null): array
     {
+        $scope = $studentScope ?? static fn (Builder $query) => $query;
+
         return $gradeLevels
+            ->with('branch.organization')
             ->withCount([
-                'students',
-                'students as male_count' => fn (Builder $query) => $query->where('sex', Sex::Male->value),
-                'students as female_count' => fn (Builder $query) => $query->where('sex', Sex::Female->value),
+                'students' => fn (Builder $query) => $scope($query),
+                'students as male_count' => function (Builder $query) use ($scope): void {
+                    $scope($query);
+                    $query->where('students.sex', Sex::Male->value);
+                },
+                'students as female_count' => function (Builder $query) use ($scope): void {
+                    $scope($query);
+                    $query->where('students.sex', Sex::Female->value);
+                },
             ])
-            ->orderBy('sort_order')
-            ->orderBy('name')
+            ->orderBy('grade_levels.sort_order')
+            ->orderBy('grade_levels.name')
             ->get()
             ->map(fn (GradeLevel $level) => [
                 'id' => $level->id,
                 'name' => $level->name,
+                'branch_name' => $level->branch?->name ?? '',
+                'organization_name' => $level->branch?->organization?->name ?? '',
                 'total' => (int) $level->students_count,
                 'male' => (int) $level->male_count,
                 'female' => (int) $level->female_count,
@@ -300,21 +382,24 @@ class DashboardService
 
     /**
      * Assignment and tested counts per school year (oldest first), across every
-     * year the user has registered — not limited by the selected school year.
+     * year of the organization — not limited by the selected school year, but
+     * following the grade level / section / subject / PACE filters.
      * Used for the "all school years" trend chart.
      *
      * @return array<int, array{school_year: string, assignments: int, tested: int}>
      */
-    protected function yearTrend(User $user): array
+    protected function yearTrend(User $user, ?int $gradeLevelId = null, ?int $sectionId = null, ?int $subjectId = null, ?int $paceId = null): array
     {
+        $records = fn (SchoolYear $year): Builder => $this->narrowAssignments($year->assignmentsQuery($user), $gradeLevelId, $sectionId, $subjectId, $paceId);
+
         return SchoolYear::query()
             ->ownedBy($user)
             ->orderBy('name')
             ->get()
             ->map(fn (SchoolYear $year) => [
                 'school_year' => $year->name,
-                'assignments' => $year->assignmentsQuery($user)->count(),
-                'tested' => $this->testedCondition($year->assignmentsQuery($user))->count(),
+                'assignments' => $records($year)->count(),
+                'tested' => $this->testedCondition($records($year))->count(),
             ])
             ->all();
     }

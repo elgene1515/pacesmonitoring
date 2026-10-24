@@ -1,25 +1,25 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
+import { useAuthStore } from '../../stores/auth';
 import { useReferenceStore } from '../../stores/reference';
 import { useSchoolYearsStore } from '../../stores/schoolYears';
-import { notify } from '../../stores/notifications';
+import { useTeachingStore } from '../../stores/teaching';
 import { pluralize } from '../../core/format';
-import GradeLevelFormModal from '../gradeLevels/GradeLevelFormModal.vue';
-import SubjectFormModal from '../gradeLevels/SubjectFormModal.vue';
-import ConfirmDialog from '../ui/ConfirmDialog.vue';
 import EmptyState from '../ui/EmptyState.vue';
 import AppIcon from '../ui/AppIcon.vue';
-import PaceRecordsBar from '../charts/PaceRecordsBar.vue';
-import PaceRecordsLegend from '../charts/PaceRecordsLegend.vue';
 
+/**
+ * "My classes": the sections the teacher teaches, grouped by school year and
+ * grade level, with the subjects they handle in each. The school admin sets
+ * the curriculum up; a teacher asks for open slots on the Class requests page.
+ */
 const ALL_YEARS = '';
 
-/** Bar segments and legend read tested / issued / assigned, left to right. */
-const RECORD_ORDER = ['tested', 'issued', 'assigned'];
-
+const auth = useAuthStore();
 const reference = useReferenceStore();
 const schoolYears = useSchoolYearsStore();
+const teaching = useTeachingStore();
 const route = useRoute();
 
 /**
@@ -32,20 +32,9 @@ let filterInitialised = false;
 
 const requestedYear = Number(route.query.school_year);
 
-const levelModal = ref(false);
-const editingLevel = ref(null);
-
-const subjectModal = ref(false);
-const subjectLevel = ref(null);
-const editingSubject = ref(null);
-
-const deletingLevel = ref(null);
-const deletingSubject = ref(null);
-const removing = ref(false);
-
 const initialLoading = computed(() => (reference.loading && !reference.loaded) || (schoolYears.loading && !schoolYears.loaded));
 
-/** Free-text search over grade level names and subject names (case-insensitive). */
+/** Free-text search over grade level, section and subject names (case-insensitive). */
 const search = ref('');
 
 const searchTerm = computed(() => search.value.trim().toLowerCase());
@@ -58,20 +47,32 @@ function matches(text) {
     return String(text ?? '').toLowerCase().includes(searchTerm.value);
 }
 
+/** The subjects the teacher handles in a section, in curriculum order. */
+function mySubjects(level, section) {
+    const ids = section.mySubjectIds ?? [];
+    return level.subjects.filter((subject) => ids.includes(subject.id));
+}
+
+/** The other teachers of a section (everyone but the signed-in teacher). */
+function coTeachers(section) {
+    return section.teachers.filter((teacher) => Number(teacher.id) !== Number(auth.user?.id));
+}
+
 /**
- * Subjects to show for a level: all of them, unless a search is active and
- * only some subjects match (the level itself does not), in which case just those.
+ * Sections to show for a level: all of the teacher's, unless a search is active
+ * and only some sections match (the level itself does not), in which case just those.
  */
-const visibleSubjectsByLevel = computed(() => {
+const visibleSectionsByLevel = computed(() => {
     const map = new Map();
 
     for (const level of yearLevels.value) {
         if (!hasSearch.value || matches(level.name)) {
-            map.set(level.id, level.subjects);
+            map.set(level.id, level.sections);
             continue;
         }
 
-        const matching = level.subjects.filter((subject) => matches(subject.name));
+        const matching = level.sections.filter((section) => matches(section.name)
+            || mySubjects(level, section).some((subject) => matches(subject.name)));
 
         if (matching.length > 0) {
             map.set(level.id, matching);
@@ -81,16 +82,17 @@ const visibleSubjectsByLevel = computed(() => {
     return map;
 });
 
-/** Levels in the selected school year that match the search (by level name or a subject name). */
-const filteredLevels = computed(() => yearLevels.value.filter((level) => visibleSubjectsByLevel.value.has(level.id)));
+const filteredLevels = computed(() => yearLevels.value.filter((level) => visibleSectionsByLevel.value.has(level.id)));
 
-function visibleSubjects(level) {
-    return visibleSubjectsByLevel.value.get(level.id) ?? level.subjects;
+function visibleSections(level) {
+    return visibleSectionsByLevel.value.get(level.id) ?? level.sections;
 }
 
 const filterYear = computed(() => schoolYears.byId(yearFilter.value));
 
 const showingAll = computed(() => yearFilter.value === ALL_YEARS);
+
+const sectionCount = computed(() => filteredLevels.value.reduce((sum, level) => sum + visibleSections(level).length, 0));
 
 function clearSearch() {
     search.value = '';
@@ -115,19 +117,19 @@ const groups = computed(() => {
 
 const emptyMessage = computed(() => {
     if (!schoolYears.hasItems) {
-        return 'Your school administrator has to register a school year before grade levels and subjects can be created for it.';
+        return 'Your school administrator has not registered a school year yet.';
     }
 
     if (hasSearch.value && yearLevels.value.length > 0) {
         const scope = filterYear.value ? ` in SY ${filterYear.value.name}` : '';
-        return `No grade levels or subjects match “${search.value.trim()}”${scope}.`;
+        return `No classes match “${search.value.trim()}”${scope}.`;
     }
 
     if (filterYear.value) {
-        return `No grade levels in SY ${filterYear.value.name} yet. Create the grade levels you teach this school year, then add their subjects.`;
+        return `You are not teaching any class in SY ${filterYear.value.name} yet. Your school admin assigns classes; you can also ask for an open one.`;
     }
 
-    return 'No grade levels yet. Create your first grade level, then add its subjects, to start registering students.';
+    return 'You are not teaching any class yet. Your school admin assigns classes; you can also ask for an open one.';
 });
 
 watch(
@@ -151,82 +153,17 @@ watch(
     { immediate: true },
 );
 
-function openCreateLevel() {
-    editingLevel.value = null;
-    levelModal.value = true;
-}
-
-function openEditLevel(level) {
-    editingLevel.value = level;
-    levelModal.value = true;
-}
-
-function openCreateSubject(level) {
-    subjectLevel.value = level;
-    editingSubject.value = null;
-    subjectModal.value = true;
-}
-
-function openEditSubject(level, subject) {
-    subjectLevel.value = level;
-    editingSubject.value = subject;
-    subjectModal.value = true;
-}
-
 function levelMeta(level) {
-    const subjects = pluralize(level.subjects.length, 'subject');
-    const students = pluralize(level.studentsCount ?? 0, 'student');
-    return `${subjects} · ${students}`;
-}
+    const sections = pluralize(level.sections.length, 'section');
+    const students = pluralize(level.sections.reduce((sum, section) => sum + Number(section.studentsCount ?? 0), 0), 'student');
 
-/** After creating a level in another school year, switch the filter so it is visible. */
-function onLevelSaved(level) {
-    if (!showingAll.value && level?.schoolYearId && Number(yearFilter.value) !== level.schoolYearId) {
-        yearFilter.value = level.schoolYearId;
-    }
-}
-
-async function confirmRemoveLevel() {
-    if (removing.value || !deletingLevel.value) {
-        return;
-    }
-
-    const target = deletingLevel.value;
-    removing.value = true;
-
-    try {
-        await reference.removeGradeLevel(target.id);
-        notify.success(`${target.name} deleted.`);
-        deletingLevel.value = null;
-    } catch (err) {
-        notify.error(err?.message ?? 'Unable to delete the grade level.');
-    } finally {
-        removing.value = false;
-    }
-}
-
-async function confirmRemoveSubject() {
-    if (removing.value || !deletingSubject.value) {
-        return;
-    }
-
-    const target = deletingSubject.value;
-    removing.value = true;
-
-    try {
-        await reference.removeSubject(target.id);
-        notify.success(`${target.name} deleted.`);
-        deletingSubject.value = null;
-    } catch (err) {
-        notify.error(err?.message ?? 'Unable to delete the subject.');
-    } finally {
-        removing.value = false;
-    }
+    return `${sections} you teach · ${students}`;
 }
 
 onMounted(() => {
     schoolYears.load();
     reference.load(true);
+    teaching.fetch();
 });
 </script>
 
@@ -234,26 +171,28 @@ onMounted(() => {
     <div class="grade-levels">
         <div class="page-header">
             <div class="title-row">
-                <h1>Grade levels</h1>
-                <button type="button" class="btn" :disabled="!schoolYears.hasItems" @click="openCreateLevel">
-                    Add grade level
-                </button>
+                <h1>My classes</h1>
+                <RouterLink :to="{ name: 'teaching-requests' }" class="btn">
+                    Request a class
+                    <span v-if="teaching.pendingCount > 0" class="count-badge" :title="pluralize(teaching.pendingCount, 'pending request')">
+                        {{ teaching.pendingCount }}
+                    </span>
+                </RouterLink>
             </div>
             <p class="muted subtitle">
-                Each school year has its own set of grade levels and subjects. Create the grade levels you
-                teach in a school year, then add the subjects taught in each one.
+                The sections you teach and the subjects you handle in each. Your school admin sets up the grade levels,
+                subjects and sections; ask for an open class when you take on another one.
             </p>
         </div>
 
-        <!-- Filters on the left; the grade level count and the colour key for the bars on the right. -->
         <div class="toolbar">
             <div class="toolbar-controls">
                 <input
                     v-model="search"
                     class="input search"
                     type="search"
-                    placeholder="Search grade level or subject"
-                    aria-label="Search grade levels and subjects"
+                    placeholder="Search grade level, section or subject"
+                    aria-label="Search classes"
                     :disabled="!schoolYears.hasItems"
                 />
                 <label class="year">
@@ -267,8 +206,7 @@ onMounted(() => {
                 </label>
             </div>
             <div v-if="!initialLoading && filteredLevels.length > 0" class="toolbar-meta">
-                <span class="muted count nowrap">{{ pluralize(filteredLevels.length, 'grade level') }}</span>
-                <PaceRecordsLegend :order="RECORD_ORDER" />
+                <span class="muted count nowrap">{{ pluralize(sectionCount, 'section') }}</span>
             </div>
         </div>
 
@@ -276,13 +214,12 @@ onMounted(() => {
 
         <EmptyState v-else-if="filteredLevels.length === 0" :message="emptyMessage">
             <template #action>
-                <RouterLink v-if="!schoolYears.hasItems" :to="{ name: 'school-years' }" class="btn btn-secondary btn-sm">
-                    School years
-                </RouterLink>
-                <button v-else-if="hasSearch && yearLevels.length > 0" type="button" class="btn btn-secondary btn-sm" @click="clearSearch">
+                <button v-if="hasSearch && yearLevels.length > 0" type="button" class="btn btn-secondary btn-sm" @click="clearSearch">
                     Clear search
                 </button>
-                <button v-else type="button" class="btn btn-secondary btn-sm" @click="openCreateLevel">Add grade level</button>
+                <RouterLink v-else-if="schoolYears.hasItems" :to="{ name: 'teaching-requests' }" class="btn btn-secondary btn-sm">
+                    See open classes
+                </RouterLink>
             </template>
         </EmptyState>
 
@@ -302,17 +239,9 @@ onMounted(() => {
                                         {{ level.name }}
                                         <span v-if="!showingAll" class="muted level-year mono">SY {{ level.schoolYearName }}</span>
                                     </h3>
-                                    <p class="muted level-meta">
-                                        {{ levelMeta(level) }}
-                                        <template v-if="hasSearch && visibleSubjects(level).length !== level.subjects.length">
-                                            · showing {{ visibleSubjects(level).length }} of {{ level.subjects.length }}
-                                        </template>
-                                    </p>
+                                    <p class="muted level-meta">{{ levelMeta(level) }}</p>
                                 </div>
                                 <div class="level-actions">
-                                    <button type="button" class="btn btn-secondary btn-sm" @click="openCreateSubject(level)">
-                                        Add subject
-                                    </button>
                                     <RouterLink
                                         :to="{ name: 'grade-level-detail', params: { id: level.id } }"
                                         class="btn btn-link btn-sm btn-icon"
@@ -321,89 +250,57 @@ onMounted(() => {
                                     >
                                         <AppIcon name="eye" />
                                     </RouterLink>
-                                    <button
-                                        type="button"
-                                        class="btn btn-link btn-sm btn-icon"
-                                        :title="`Edit ${level.name}`"
-                                        :aria-label="`Edit ${level.name}`"
-                                        @click="openEditLevel(level)"
-                                    >
-                                        <AppIcon name="pencil" />
-                                    </button>
-                                    <button
-                                        type="button"
-                                        class="btn btn-link btn-sm btn-icon text-danger"
-                                        :title="level.hasStudents ? 'Move or delete its students first' : `Delete ${level.name}`"
-                                        :aria-label="`Delete ${level.name}`"
-                                        @click="deletingLevel = level"
-                                    >
-                                        <AppIcon name="trash" />
-                                    </button>
                                 </div>
                             </div>
 
-                            <EmptyState v-if="visibleSubjects(level).length === 0" compact message="No subjects yet.">
-                                <template #action>
-                                    <button type="button" class="btn btn-link btn-sm" @click="openCreateSubject(level)">
-                                        Add the first subject
-                                    </button>
-                                </template>
-                            </EmptyState>
-
-                            <table v-else class="table subjects">
-                                <!-- Fixed column widths so the columns line up across every grade level card. -->
+                            <table class="table sections">
                                 <colgroup>
-                                    <col class="col-subject" />
-                                    <col class="col-records" />
+                                    <col class="col-section" />
+                                    <col class="col-subjects" />
+                                    <col class="col-students" />
                                     <col class="col-actions" />
                                 </colgroup>
                                 <thead>
                                     <tr>
-                                        <th>Subject</th>
-                                        <th>PACE records</th>
+                                        <th>Section</th>
+                                        <th>Your subjects</th>
+                                        <th class="text-right">Students</th>
                                         <th class="table-actions"><span class="sr-only">Actions</span></th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="subject in visibleSubjects(level)" :key="subject.id">
-                                        <td class="subject-name">{{ subject.name }}</td>
-                                        <td class="records">
-                                            <PaceRecordsBar
-                                                :total="subject.assignmentsCount"
-                                                :tested="subject.testedCount"
-                                                :issued="subject.issuedCount"
-                                                :assigned="subject.assignedCount"
-                                                :order="RECORD_ORDER"
-                                                tooltip
-                                            />
+                                    <tr v-for="section in visibleSections(level)" :key="section.id">
+                                        <td class="ellipsis">
+                                            <RouterLink :to="{ name: 'section-detail', params: { id: section.id } }" class="section-name">
+                                                {{ section.name }}
+                                            </RouterLink>
+                                            <span v-if="coTeachers(section).length" class="muted small">
+                                                With {{ coTeachers(section).map((teacher) => teacher.name).join(', ') }}
+                                            </span>
                                         </td>
+                                        <td class="subjects-cell">
+                                            <span v-if="mySubjects(level, section).length === 0" class="muted">—</span>
+                                            <template v-else>
+                                                <RouterLink
+                                                    v-for="subject in mySubjects(level, section)"
+                                                    :key="subject.id"
+                                                    :to="{ name: 'subject-detail', params: { id: subject.id } }"
+                                                    class="subject-chip"
+                                                >
+                                                    {{ subject.name }}
+                                                </RouterLink>
+                                            </template>
+                                        </td>
+                                        <td class="mono text-right">{{ section.studentsCount ?? 0 }}</td>
                                         <td class="table-actions">
                                             <RouterLink
-                                                :to="{ name: 'subject-detail', params: { id: subject.id } }"
+                                                :to="{ name: 'section-detail', params: { id: section.id } }"
                                                 class="btn btn-link btn-sm btn-icon"
-                                                :title="`View ${subject.name} records`"
-                                                :aria-label="`View ${subject.name} records`"
+                                                :title="`View ${section.name}`"
+                                                :aria-label="`View ${level.name} ${section.name}`"
                                             >
                                                 <AppIcon name="eye" />
                                             </RouterLink>
-                                            <button
-                                                type="button"
-                                                class="btn btn-link btn-sm btn-icon"
-                                                :title="`Edit ${subject.name}`"
-                                                :aria-label="`Edit ${subject.name}`"
-                                                @click="openEditSubject(level, subject)"
-                                            >
-                                                <AppIcon name="pencil" />
-                                            </button>
-                                            <button
-                                                type="button"
-                                                class="btn btn-link btn-sm btn-icon text-danger"
-                                                :title="`Delete ${subject.name}`"
-                                                :aria-label="`Delete ${subject.name}`"
-                                                @click="deletingSubject = subject"
-                                            >
-                                                <AppIcon name="trash" />
-                                            </button>
                                         </td>
                                     </tr>
                                 </tbody>
@@ -413,48 +310,6 @@ onMounted(() => {
                 </section>
             </div>
         </template>
-
-        <GradeLevelFormModal
-            v-model="levelModal"
-            :grade-level="editingLevel"
-            :school-year-id="showingAll ? null : yearFilter"
-            @saved="onLevelSaved"
-        />
-
-        <SubjectFormModal v-model="subjectModal" :grade-level="subjectLevel" :subject="editingSubject" />
-
-        <ConfirmDialog
-            :model-value="deletingLevel !== null"
-            title="Delete grade level"
-            :busy="removing"
-            @update:model-value="deletingLevel = null"
-            @confirm="confirmRemoveLevel"
-        >
-            Delete <strong v-if="deletingLevel">{{ deletingLevel.labelWithYear }}</strong>?
-            <template v-if="deletingLevel && deletingLevel.hasStudents">
-                It still has {{ pluralize(deletingLevel.studentsCount, 'student') }} enrolled, so it cannot be deleted
-                until they are moved to another grade level or removed.
-            </template>
-            <template v-else-if="deletingLevel && deletingLevel.subjects.length">
-                Its {{ pluralize(deletingLevel.subjects.length, 'subject') }} and any PACE records filed under them
-                will be deleted as well. This cannot be undone.
-            </template>
-            <template v-else>This cannot be undone.</template>
-        </ConfirmDialog>
-
-        <ConfirmDialog
-            :model-value="deletingSubject !== null"
-            title="Delete subject"
-            :busy="removing"
-            @update:model-value="deletingSubject = null"
-            @confirm="confirmRemoveSubject"
-        >
-            Delete <strong v-if="deletingSubject">{{ deletingSubject.name }}</strong>?
-            <template v-if="deletingSubject && deletingSubject.assignmentsCount">
-                {{ pluralize(deletingSubject.assignmentsCount, 'PACE record') }} filed under it will be deleted as well.
-            </template>
-            This cannot be undone.
-        </ConfirmDialog>
     </div>
 </template>
 
@@ -465,7 +320,6 @@ onMounted(() => {
     gap: 20px;
 }
 
-/* Title and description take the whole width; the controls live in the toolbar below. */
 .page-header {
     display: block;
     margin-bottom: 0;
@@ -475,7 +329,6 @@ onMounted(() => {
     margin: 0;
 }
 
-/* Title on the left, primary action on the right, on one line. */
 .title-row {
     display: flex;
     align-items: center;
@@ -486,6 +339,22 @@ onMounted(() => {
 
 .subtitle {
     margin: 4px 0 0;
+}
+
+.count-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    margin-left: 4px;
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--primary);
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1;
 }
 
 .toolbar {
@@ -532,7 +401,7 @@ onMounted(() => {
 .search {
     width: auto;
     flex: 1 1 200px;
-    max-width: 260px;
+    max-width: 280px;
 }
 
 .groups {
@@ -602,40 +471,66 @@ onMounted(() => {
     gap: 4px;
 }
 
-/*
- * Every grade level card shows its own table, so the column widths are fixed
- * (the subject column takes whatever is left) and the cards line up vertically.
- */
-.subjects {
+.sections {
     table-layout: fixed;
 }
 
-.col-records {
-    width: 160px;
+.col-section {
+    width: 32%;
+}
+
+.col-students {
+    width: 100px;
 }
 
 .col-actions {
-    width: 124px;
+    width: 60px;
 }
 
-.subject-name {
+.section-name {
     font-weight: 500;
+}
+
+.ellipsis {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.records {
-    line-height: 1;
+.small {
+    display: block;
+    font-size: 0.8rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
-.subjects .table-actions .btn + .btn {
-    margin-left: 2px;
+.subjects-cell {
+    line-height: 1.9;
+}
+
+.subject-chip {
+    display: inline-block;
+    margin: 0 6px 0 0;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 0.85rem;
+    line-height: 1.6;
+    white-space: nowrap;
+}
+
+.subject-chip:hover {
+    text-decoration: none;
+    border-color: var(--primary);
 }
 
 @media (max-width: 560px) {
-    .col-records {
-        width: 120px;
+    .col-section {
+        width: 40%;
+    }
+
+    .col-students {
+        width: 80px;
     }
 }
 

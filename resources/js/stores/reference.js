@@ -1,26 +1,31 @@
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import { referenceService } from '../services';
-import { GradeLevel, Subject } from '../models';
+import { GradeLevel } from '../models';
 import { notify } from './notifications';
 
 /**
- * The signed-in user's grade levels + subjects (cached for the session).
+ * The curriculum as the signed-in teacher sees it: the grade levels they
+ * teach in, each with its subjects and the teacher's sections (cached for
+ * the session, read-only; the admin maintains the curriculum).
  *
  *  gradeLevels                ref<GradeLevel[]>
  *  loaded / loading           ref<boolean>
  *  hasGradeLevels             computed<boolean>
+ *  sections                   computed<Section[]>   every section the teacher teaches in (with gradeLevel set)
+ *  hasSections                computed<boolean>
  *  load(force = false)        -> Promise<GradeLevel[]>  (toasts on failure, never throws)
  *  gradeLevelById(id)         -> GradeLevel|null
  *  gradeLevelName(id)         -> string ("" when unknown)
- *  subjectsFor(gradeLevelId)  -> Subject[]
+ *  gradeLevelsFor(schoolYearId) -> GradeLevel[]
+ *  subjectsFor(gradeLevelId)  -> Subject[]            the grade level's subjects
+ *  mySubjectsFor(sectionId)   -> Subject[]            the subjects the teacher handles in that section
  *  subjectName(subjectId)     -> string
- *  createGradeLevel(payload)  -> Promise<GradeLevel>   (throws ApiError)
- *  updateGradeLevel(id, p)    -> Promise<GradeLevel>   (throws ApiError)
- *  removeGradeLevel(id)       -> Promise<void>         (throws ApiError)
- *  createSubject(payload)     -> Promise<Subject>      (throws ApiError)
- *  updateSubject(id, p)       -> Promise<Subject>      (throws ApiError)
- *  removeSubject(id)          -> Promise<void>         (throws ApiError)
+ *  sectionById(id)            -> Section|null
+ *  sectionsFor(gradeLevelId)  -> Section[]
+ *  sectionsForYear(schoolYearId) -> Section[]
+ *  teaches(sectionId, subjectId) -> boolean
+ *  teachesSubject(subjectId) -> boolean             the teacher teaches it in some section (so its subject page opens)
  *  reset()                    forget everything (called when the session ends)
  */
 export const useReferenceStore = defineStore('reference', () => {
@@ -31,9 +36,16 @@ export const useReferenceStore = defineStore('reference', () => {
 
     const hasGradeLevels = computed(() => gradeLevels.value.length > 0);
 
-    function sortLevels() {
-        gradeLevels.value.sort(GradeLevel.compare);
-    }
+    /** Every section the teacher teaches in, with its grade level attached, in curriculum order. */
+    const sections = computed(() => gradeLevels.value.flatMap((level) => level.sections.map((section) => {
+        if (!section.gradeLevel) {
+            section.gradeLevel = level;
+        }
+
+        return section;
+    })));
+
+    const hasSections = computed(() => sections.value.length > 0);
 
     async function load(force = false) {
         if (loaded.value && !force) {
@@ -49,9 +61,10 @@ export const useReferenceStore = defineStore('reference', () => {
         inFlight = (async () => {
             try {
                 gradeLevels.value = await referenceService.gradeLevels();
+                gradeLevels.value.sort(GradeLevel.compare);
                 loaded.value = true;
             } catch (err) {
-                notify.error(err?.message ?? 'Failed to load grade levels.');
+                notify.error(err?.message ?? 'Failed to load your classes.');
             } finally {
                 loading.value = false;
                 inFlight = null;
@@ -72,10 +85,6 @@ export const useReferenceStore = defineStore('reference', () => {
         return gradeLevelById(id)?.name ?? '';
     }
 
-    function subjectsFor(gradeLevelId) {
-        return gradeLevelById(gradeLevelId)?.subjects ?? [];
-    }
-
     /** Grade levels registered under one school year (all of them when no id is given). */
     function gradeLevelsFor(schoolYearId) {
         if (schoolYearId === null || schoolYearId === undefined || schoolYearId === '') {
@@ -84,6 +93,51 @@ export const useReferenceStore = defineStore('reference', () => {
 
         const numeric = Number(schoolYearId);
         return gradeLevels.value.filter((level) => level.schoolYearId === numeric);
+    }
+
+    function subjectsFor(gradeLevelId) {
+        return gradeLevelById(gradeLevelId)?.subjects ?? [];
+    }
+
+    function sectionById(id) {
+        const numeric = Number(id);
+        return sections.value.find((section) => section.id === numeric) ?? null;
+    }
+
+    function sectionsFor(gradeLevelId) {
+        return gradeLevelById(gradeLevelId)?.sections ?? [];
+    }
+
+    /** Sections under one school year (all of them when no id is given). */
+    function sectionsForYear(schoolYearId) {
+        if (schoolYearId === null || schoolYearId === undefined || schoolYearId === '') {
+            return sections.value;
+        }
+
+        const numeric = Number(schoolYearId);
+        return sections.value.filter((section) => section.gradeLevel?.schoolYearId === numeric);
+    }
+
+    /** The subjects the signed-in teacher handles in a section. */
+    function mySubjectsFor(sectionId) {
+        const section = sectionById(sectionId);
+
+        if (!section) {
+            return [];
+        }
+
+        const level = gradeLevelById(section.gradeLevelId);
+        const ids = section.mySubjectIds ?? [];
+
+        return (level?.subjects ?? []).filter((subject) => ids.includes(subject.id));
+    }
+
+    function teaches(sectionId, subjectId) {
+        return sectionById(sectionId)?.teaches(subjectId) ?? false;
+    }
+
+    function teachesSubject(subjectId) {
+        return sections.value.some((section) => section.teaches(subjectId));
     }
 
     function subjectName(subjectId) {
@@ -99,83 +153,6 @@ export const useReferenceStore = defineStore('reference', () => {
         return '';
     }
 
-    function upsertLevel(level) {
-        const index = gradeLevels.value.findIndex((item) => item.id === level.id);
-
-        if (index === -1) {
-            gradeLevels.value.push(level);
-        } else {
-            gradeLevels.value.splice(index, 1, level);
-        }
-
-        sortLevels();
-    }
-
-    async function createGradeLevel(payload) {
-        const level = await referenceService.createGradeLevel(payload);
-        upsertLevel(level);
-        loaded.value = true;
-        return level;
-    }
-
-    async function updateGradeLevel(id, payload) {
-        const level = await referenceService.updateGradeLevel(id, payload);
-        upsertLevel(level);
-        return level;
-    }
-
-    async function removeGradeLevel(id) {
-        await referenceService.removeGradeLevel(id);
-        const numeric = Number(id);
-        gradeLevels.value = gradeLevels.value.filter((level) => level.id !== numeric);
-    }
-
-    /** Place a subject inside its grade level (insert or replace) and keep the subject order. */
-    function upsertSubject(subject) {
-        const level = gradeLevelById(subject.gradeLevelId);
-
-        if (!level) {
-            return;
-        }
-
-        const index = level.subjects.findIndex((item) => item.id === subject.id);
-
-        if (index === -1) {
-            level.subjects.push(subject);
-            level.subjectsCount = level.subjects.length;
-        } else {
-            level.subjects.splice(index, 1, subject);
-        }
-
-        level.subjects.sort(Subject.compare);
-    }
-
-    async function createSubject(payload) {
-        const subject = await referenceService.createSubject(payload);
-        upsertSubject(subject);
-        return subject;
-    }
-
-    async function updateSubject(id, payload) {
-        const subject = await referenceService.updateSubject(id, payload);
-        upsertSubject(subject);
-        return subject;
-    }
-
-    async function removeSubject(id) {
-        await referenceService.removeSubject(id);
-        const numeric = Number(id);
-
-        for (const level of gradeLevels.value) {
-            const before = level.subjects.length;
-            level.subjects = level.subjects.filter((subject) => subject.id !== numeric);
-
-            if (level.subjects.length !== before) {
-                level.subjectsCount = level.subjects.length;
-            }
-        }
-    }
-
     function reset() {
         gradeLevels.value = [];
         loaded.value = false;
@@ -188,18 +165,20 @@ export const useReferenceStore = defineStore('reference', () => {
         loaded,
         loading,
         hasGradeLevels,
+        sections,
+        hasSections,
         load,
         gradeLevelById,
         gradeLevelName,
-        subjectsFor,
         gradeLevelsFor,
+        subjectsFor,
+        mySubjectsFor,
         subjectName,
-        createGradeLevel,
-        updateGradeLevel,
-        removeGradeLevel,
-        createSubject,
-        updateSubject,
-        removeSubject,
+        sectionById,
+        sectionsFor,
+        sectionsForYear,
+        teaches,
+        teachesSubject,
         reset,
     };
 });

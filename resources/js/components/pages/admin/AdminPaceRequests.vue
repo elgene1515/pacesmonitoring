@@ -13,8 +13,11 @@ import StatusBadge from '../../ui/StatusBadge.vue';
 import AppIcon from '../../ui/AppIcon.vue';
 
 /**
- * The teachers' PACE stock requests: adjust them, mark them given (which adds
- * the booklets to the teacher's stock of that PACE) or decline them. Platform
+ * The teachers' PACE stock requests: adjust them, give them (which moves the
+ * booklets from the branch pool to the teacher, adding a new PACE to the
+ * catalog first when needed) or decline them, one by one or several at once
+ * (tick the pending rows: the oldest are given first, and any the pool cannot
+ * cover stay pending with the reason shown). Platform
  * staff see the organization picked in the scope bar, or every organization.
  */
 const STATUS_OPTIONS = [
@@ -37,6 +40,117 @@ const loaded = ref(false);
 const filters = reactive({ status: 'pending', branch_id: '', teacher_id: '', search: '', needed_from: '', needed_to: '' });
 
 const canWrite = computed(() => auth.canWrite);
+
+/* ---------- selection: give or decline several requests at once ---------- */
+
+const selectedIds = ref([]);
+const selectAllBox = ref(null);
+
+const pendingRows = computed(() => requests.value.filter((request) => request.isPending));
+/** The ticked requests that are still in the list and still pending. */
+const selectedRequests = computed(() => pendingRows.value.filter((request) => selectedIds.value.includes(request.id)));
+const allSelected = computed(() => pendingRows.value.length > 0 && selectedRequests.value.length === pendingRows.value.length);
+const someSelected = computed(() => selectedRequests.value.length > 0 && !allSelected.value);
+
+watch(someSelected, (partly) => {
+    if (selectAllBox.value) {
+        selectAllBox.value.indeterminate = partly;
+    }
+}, { flush: 'post' });
+
+function toggleAll() {
+    selectedIds.value = allSelected.value ? [] : pendingRows.value.map((request) => request.id);
+}
+
+function toggleOne(id) {
+    selectedIds.value = selectedIds.value.includes(id)
+        ? selectedIds.value.filter((item) => item !== id)
+        : [...selectedIds.value, id];
+}
+
+/** A filter or a decision can remove rows: keep only the ticks that are still pending rows. */
+watch(requests, () => {
+    selectedIds.value = selectedIds.value.filter((id) => pendingRows.value.some((request) => request.id === id));
+});
+
+/**
+ * What giving the ticked requests would do, in the order the server uses (oldest first), each
+ * against the pool of its PACE after the ones before it: given, not covered by the pool, or not
+ * in the catalog yet (those are given one by one). The server decides for real; this is the preview.
+ */
+const batchPlan = computed(() => {
+    const running = new Map();
+    const oldestFirst = [...selectedRequests.value]
+        .sort((a, b) => String(a.createdAt ?? '').localeCompare(String(b.createdAt ?? '')) || a.id - b.id);
+
+    return oldestFirst.map((request) => {
+        if (!request.isLinked || !request.pace) {
+            return { request, state: 'new', note: 'Not in the catalog yet: give it on its own (it needs stock in the pool first).' };
+        }
+
+        const pool = running.has(request.paceId) ? running.get(request.paceId) : request.pace.poolStock;
+
+        if (request.quantity <= pool) {
+            running.set(request.paceId, pool - request.quantity);
+
+            return { request, state: 'ok', note: `Pool ${pool} → ${pool - request.quantity}` };
+        }
+
+        return { request, state: 'short', note: `The pool has ${pool}; ${request.quantity} asked for` };
+    });
+});
+
+const plannedCount = computed(() => batchPlan.value.filter((row) => row.state === 'ok').length);
+const plannedBooklets = computed(() => batchPlan.value.filter((row) => row.state === 'ok').reduce((sum, row) => sum + row.request.quantity, 0));
+
+const batchGiveOpen = ref(false);
+const batchDeclineOpen = ref(false);
+const batchNote = ref('');
+const batchBusy = ref(false);
+/** What the last batch could not do: {action, skipped: [{id, teacherName, label, quantity, reason}]} */
+const batchResult = ref(null);
+
+function openBatch(action) {
+    batchNote.value = '';
+
+    if (action === 'give') {
+        batchGiveOpen.value = true;
+    } else {
+        batchDeclineOpen.value = true;
+    }
+}
+
+async function runBatch(action) {
+    if (batchBusy.value || selectedRequests.value.length === 0) {
+        return;
+    }
+
+    batchBusy.value = true;
+
+    try {
+        const result = await adminService.decidePaceRequests(action, selectedRequests.value.map((request) => request.id), batchNote.value.trim());
+        const verb = action === 'give' ? 'given' : 'declined';
+
+        batchGiveOpen.value = false;
+        batchDeclineOpen.value = false;
+
+        if (result.done.length > 0) {
+            notify.success(`${pluralize(result.done.length, 'request')} ${verb}.`);
+        } else {
+            notify.error(`No request could be ${verb}.`);
+        }
+
+        // Whatever was skipped stays ticked (it is still pending), and the reasons are shown.
+        selectedIds.value = result.skipped.map((row) => row.id);
+        batchResult.value = result.skipped.length > 0 ? { action, skipped: result.skipped } : null;
+
+        await refresh();
+    } catch (err) {
+        notify.error(err?.isValidation ? (err.first('ids') ?? err.message) : (err?.message ?? 'Unable to decide the requests.'));
+    } finally {
+        batchBusy.value = false;
+    }
+}
 const hasFilters = computed(() => filters.status !== 'pending'
     || filters.branch_id !== ''
     || filters.teacher_id !== ''
@@ -131,7 +245,7 @@ function openEdit(request) {
     editErrors.value = {};
 }
 
-/** True when the edit would detach the request from the teacher's registered PACE. */
+/** True when the edit would detach the request from the catalog PACE it points at. */
 const editDetaches = computed(() => Boolean(editing.value?.isLinked)
     && (String(editForm.pace_number).trim() !== editing.value.paceNumber || String(editForm.pace_name).trim() !== editing.value.paceName));
 
@@ -213,8 +327,13 @@ async function confirmGive() {
 
     const quantity = Number(giveForm.quantity);
 
-    if (!Number.isInteger(quantity) || quantity < 1) {
-        giveErrors.value = { quantity: ['Enter the number of booklets handed over (at least 1).'] };
+    if (!Number.isInteger(quantity) || quantity < 0) {
+        giveErrors.value = { quantity: ['Enter the number of booklets handed over (0 or more).'] };
+        return;
+    }
+
+    if (request.isLinked && request.pace && quantity > request.pace.poolStock) {
+        giveErrors.value = { quantity: [`The pool only has ${request.pace.poolStock} of this PACE. Receive more first, or give fewer.`] };
         return;
     }
 
@@ -226,9 +345,11 @@ async function confirmGive() {
             quantity,
             decision_note: giveForm.decision_note.trim() || null,
         });
-        notify.success(given.isLinked
-            ? `${given.quantity} × PACE ${given.label} given to ${given.teacherName}; their stock is now ${given.pace?.stock ?? '—'}.`
-            : `${given.quantity} × PACE ${given.label} given to ${given.teacherName}.`);
+        if (quantity === 0) {
+            notify.success(`PACE ${given.label} is in the catalog now; no booklets were handed over to ${given.teacherName}.`);
+        } else {
+            notify.success(`${quantity} × PACE ${given.label} given to ${given.teacherName}; the pool is now ${given.pace?.poolStock ?? '—'}.`);
+        }
         giving.value = null;
         await refresh();
     } catch (err) {
@@ -322,12 +443,16 @@ onMounted(() => {
 
 <template>
     <div class="admin-pace-requests">
+        <p class="back">
+            <RouterLink :to="{ name: 'admin-paces' }">&larr; PACEs</RouterLink>
+        </p>
+
         <div class="page-header">
             <div>
-                <h1>PACE requests</h1>
+                <h1>Stock requests</h1>
                 <p class="muted subtitle">
-                    Teachers asking for PACE booklets. Marking a request as given adds the booklets to the teacher's
-                    stock of that PACE; you can adjust the quantity first.
+                    Teachers asking for PACE booklets. Giving a request moves the booklets from the branch pool to the
+                    teacher; you can adjust the quantity first.
                 </p>
             </div>
         </div>
@@ -368,6 +493,15 @@ onMounted(() => {
                 <span class="muted count nowrap">{{ loading && !loaded ? 'Loading…' : pluralize(requests.length, 'request') }}</span>
             </div>
 
+            <div v-if="selectedRequests.length > 0" class="selection-bar" role="region" aria-label="Selected requests">
+                <span class="selection-count">{{ pluralize(selectedRequests.length, 'request') }} selected</span>
+                <div class="selection-actions">
+                    <button type="button" class="btn btn-sm" :disabled="!canWrite" @click="openBatch('give')">Give selected</button>
+                    <button type="button" class="btn btn-secondary btn-sm text-danger" :disabled="!canWrite" @click="openBatch('decline')">Decline selected</button>
+                    <button type="button" class="btn btn-link btn-sm" @click="selectedIds = []">Clear selection</button>
+                </div>
+            </div>
+
             <p v-if="loading && !loaded" class="muted state">Loading…</p>
 
             <EmptyState v-else-if="requests.length === 0" :message="emptyMessage">
@@ -379,6 +513,7 @@ onMounted(() => {
             <div v-else class="table-wrap">
                 <table class="table">
                     <colgroup>
+                        <col class="col-select" />
                         <col class="col-teacher" />
                         <col class="col-pace" />
                         <col class="col-qty" />
@@ -390,6 +525,17 @@ onMounted(() => {
                     </colgroup>
                     <thead>
                         <tr>
+                            <th class="select-cell">
+                                <input
+                                    ref="selectAllBox"
+                                    type="checkbox"
+                                    :checked="allSelected"
+                                    :disabled="pendingRows.length === 0 || !canWrite"
+                                    aria-label="Select all pending requests in the list"
+                                    title="Select all pending requests in the list"
+                                    @change="toggleAll"
+                                />
+                            </th>
                             <th>Teacher</th>
                             <th>PACE</th>
                             <th class="text-right">Qty</th>
@@ -401,7 +547,17 @@ onMounted(() => {
                         </tr>
                     </thead>
                     <tbody>
-                        <tr v-for="request in requests" :key="request.id">
+                        <tr v-for="request in requests" :key="request.id" :class="{ selected: selectedIds.includes(request.id) }">
+                            <td class="select-cell">
+                                <input
+                                    v-if="request.isPending"
+                                    type="checkbox"
+                                    :checked="selectedIds.includes(request.id)"
+                                    :disabled="!canWrite"
+                                    :aria-label="`Select ${request.teacherName}'s request for PACE ${request.label}`"
+                                    @change="toggleOne(request.id)"
+                                />
+                            </td>
                             <td class="ellipsis" data-label="Teacher">
                                 <RouterLink v-if="request.userId" :to="{ name: 'admin-user-detail', params: { id: request.userId } }" class="name">
                                     {{ request.teacherName || '—' }}
@@ -416,8 +572,8 @@ onMounted(() => {
                                     {{ request.label }}
                                 </RouterLink>
                                 <span v-else class="name">{{ request.label }}</span>
-                                <span v-if="request.isLinked && request.pace" class="muted small">Teacher's stock: {{ request.pace.stock }}</span>
-                                <span v-else class="muted small">Not a registered PACE</span>
+                                <span v-if="request.isLinked && request.pace" class="muted small">Pool: {{ request.pace.poolStock }}</span>
+                                <span v-else class="muted small">Not in the catalog yet</span>
                             </td>
                             <td class="mono text-right" data-label="Quantity">{{ request.quantity }}</td>
                             <td class="nowrap" data-label="Needed by">{{ formatDate(request.neededBy) || '—' }}</td>
@@ -475,8 +631,8 @@ onMounted(() => {
                     </AppField>
                 </div>
                 <p v-if="editDetaches" class="muted small-note">
-                    Changing the number or name detaches the request from the teacher's registered PACE, so marking it
-                    given will no longer top up that PACE's stock.
+                    Changing the number or name detaches the request from the catalog PACE it points at; giving it then
+                    uses (or adds) the PACE with the new number and name.
                 </p>
                 <div class="actions">
                     <button type="button" class="btn btn-secondary" :disabled="savingEdit" @click="editing = null">Cancel</button>
@@ -491,14 +647,15 @@ onMounted(() => {
                 <p class="muted">
                     Hand over PACE <strong>{{ giving.label }}</strong> to <strong>{{ giving.teacherName }}</strong>.
                     <template v-if="giving.isLinked">
-                        The quantity is added to their stock of this PACE (now {{ giving.pace?.stock ?? 0 }}).
+                        The booklets move from the branch pool (now {{ giving.pace?.poolStock ?? 0 }}) to the teacher.
                     </template>
                     <template v-else>
-                        This PACE is not registered by the teacher yet, so no stock is updated automatically.
+                        This PACE is not in the branch catalog yet: giving adds it (with no pool stock), then hands the booklets
+                        over. Receive the booklets into the pool first, or give 0 to only add the PACE to the catalog.
                     </template>
                 </p>
                 <AppField label="Quantity given" for="give-request-quantity" :error="giveErrors.quantity" required>
-                    <input id="give-request-quantity" v-model="giveForm.quantity" class="input quantity" type="number" min="1" step="1" :disabled="savingGive" />
+                    <input id="give-request-quantity" v-model="giveForm.quantity" class="input quantity" type="number" min="0" step="1" :disabled="savingGive" />
                 </AppField>
                 <AppField label="Note to the teacher" for="give-request-note" :error="giveErrors.decision_note" hint="Optional.">
                     <input id="give-request-note" v-model="giveForm.decision_note" class="input" type="text" maxlength="255" :disabled="savingGive" />
@@ -526,10 +683,108 @@ onMounted(() => {
                 </div>
             </form>
         </AppModal>
+
+        <!-- Give the selected requests -->
+        <AppModal :model-value="batchGiveOpen" title="Give the selected requests" width="680px" :closable="!batchBusy" :close-on-backdrop="false" @update:model-value="batchGiveOpen = false">
+            <form v-if="batchGiveOpen" class="form" novalidate @submit.prevent="runBatch('give')">
+                <p class="muted">
+                    Each request is given the quantity that was asked for, from its branch pool, oldest first. A request the pool cannot cover
+                    stays pending.
+                </p>
+
+                <div class="plan-wrap">
+                    <table class="table plan">
+                        <thead>
+                            <tr>
+                                <th>Teacher</th>
+                                <th>PACE</th>
+                                <th class="text-right">Qty</th>
+                                <th>What happens</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="row in batchPlan" :key="row.request.id" :class="`plan-${row.state}`">
+                                <td class="ellipsis">{{ row.request.teacherName || '—' }}</td>
+                                <td class="ellipsis">{{ row.request.label }}</td>
+                                <td class="mono text-right">{{ row.request.quantity }}</td>
+                                <td>
+                                    <StatusBadge :tone="row.state === 'ok' ? 'ok' : 'warn'">{{ row.state === 'ok' ? 'Will be given' : 'Stays pending' }}</StatusBadge>
+                                    <span class="muted small">{{ row.note }}</span>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <p class="plan-summary">
+                    <strong>{{ pluralize(plannedCount, 'request') }}</strong> will be given ({{ pluralize(plannedBooklets, 'booklet') }}<template v-if="plannedCount < batchPlan.length">,
+                    {{ batchPlan.length - plannedCount }} will stay pending</template>).
+                </p>
+
+                <AppField label="Note to the teachers" for="batch-give-note" hint="Optional; every teacher sees it.">
+                    <input id="batch-give-note" v-model="batchNote" class="input" type="text" maxlength="255" :disabled="batchBusy" />
+                </AppField>
+
+                <div class="actions">
+                    <button type="button" class="btn btn-secondary" :disabled="batchBusy" @click="batchGiveOpen = false">Cancel</button>
+                    <button type="submit" class="btn" :disabled="batchBusy || plannedCount === 0">
+                        {{ batchBusy ? 'Giving…' : `Give ${pluralize(plannedCount, 'request')}` }}
+                    </button>
+                </div>
+            </form>
+        </AppModal>
+
+        <!-- Decline the selected requests -->
+        <AppModal :model-value="batchDeclineOpen" title="Decline the selected requests" width="520px" :closable="!batchBusy" @update:model-value="batchDeclineOpen = false">
+            <form v-if="batchDeclineOpen" class="form" novalidate @submit.prevent="runBatch('decline')">
+                <p class="muted">
+                    Decline <strong>{{ pluralize(selectedRequests.length, 'request') }}</strong> from
+                    {{ pluralize(new Set(selectedRequests.map((request) => request.userId)).size, 'teacher') }}? They will see the note and can ask again later.
+                </p>
+                <ul class="decline-list">
+                    <li v-for="request in selectedRequests" :key="request.id">
+                        <strong>{{ request.teacherName }}</strong>: {{ request.quantity }} × PACE {{ request.label }}
+                    </li>
+                </ul>
+                <AppField label="Note" for="batch-decline-note" hint="Optional; every teacher sees it.">
+                    <input id="batch-decline-note" v-model="batchNote" class="input" type="text" maxlength="255" :disabled="batchBusy" />
+                </AppField>
+                <div class="actions">
+                    <button type="button" class="btn btn-secondary" :disabled="batchBusy" @click="batchDeclineOpen = false">Cancel</button>
+                    <button type="submit" class="btn btn-danger" :disabled="batchBusy">
+                        {{ batchBusy ? 'Declining…' : `Decline ${pluralize(selectedRequests.length, 'request')}` }}
+                    </button>
+                </div>
+            </form>
+        </AppModal>
+
+        <!-- What the last batch could not do -->
+        <AppModal :model-value="batchResult !== null" title="Some requests were left as they were" width="560px" @update:model-value="batchResult = null">
+            <div v-if="batchResult" class="form">
+                <p class="muted">
+                    {{ pluralize(batchResult.skipped.length, 'request') }} could not be {{ batchResult.action === 'give' ? 'given' : 'declined' }}
+                    and {{ batchResult.skipped.length === 1 ? 'is' : 'are' }} still ticked in the list.
+                </p>
+                <ul class="decline-list">
+                    <li v-for="row in batchResult.skipped" :key="row.id">
+                        <strong>{{ row.teacherName }}</strong>: {{ row.quantity }} × PACE {{ row.label }}
+                        <span class="muted small">{{ row.reason }}</span>
+                    </li>
+                </ul>
+                <div class="actions">
+                    <button type="button" class="btn" @click="batchResult = null">OK</button>
+                </div>
+            </div>
+        </AppModal>
     </div>
 </template>
 
 <style scoped>
+.back {
+    margin: 0;
+    font-size: 0.92rem;
+}
+
 .admin-pace-requests {
     display: flex;
     flex-direction: column;
@@ -607,7 +862,79 @@ onMounted(() => {
 
 .table {
     table-layout: fixed;
-    min-width: 1040px;
+    min-width: 1084px;
+}
+
+.selection-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 16px;
+    flex-wrap: wrap;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(var(--primary-rgb), 0.08);
+}
+
+.selection-count {
+    font-weight: 500;
+}
+
+.selection-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.select-cell {
+    text-align: center;
+}
+
+.col-select {
+    width: 44px;
+}
+
+.table tbody tr.selected {
+    background: rgba(var(--primary-rgb), 0.06);
+}
+
+/* The preview of what a batch give would do. */
+.plan-wrap {
+    max-height: 300px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.plan {
+    min-width: 0;
+    table-layout: auto;
+}
+
+.plan td .small {
+    display: block;
+    font-size: 0.82rem;
+}
+
+.plan-summary {
+    margin: 0;
+}
+
+.decline-list {
+    margin: 0;
+    padding-left: 20px;
+    max-height: 220px;
+    overflow-y: auto;
+}
+
+.decline-list li {
+    margin-bottom: 4px;
+}
+
+.decline-list .small {
+    display: block;
+    font-size: 0.85rem;
 }
 
 .col-teacher {
@@ -765,6 +1092,15 @@ td .small {
         padding-top: 10px;
         text-align: left;
         white-space: normal;
+    }
+
+    .table td.select-cell {
+        text-align: left;
+    }
+
+    .table th.select-cell,
+    .table td.select-cell:empty {
+        display: none;
     }
 
     .table td.table-actions .btn + .btn {

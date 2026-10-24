@@ -11,6 +11,7 @@ use App\Http\Resources\PaceRequestResource;
 use App\Models\PaceRequest;
 use App\Services\Admin\TeacherScope;
 use App\Services\PaceRequestService;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Validation\Rule;
@@ -62,7 +63,8 @@ class PaceRequestController extends Controller
     }
 
     /**
-     * The booklets were handed over: close the request and top up the linked PACE's stock.
+     * Hand the booklets over from the branch's pool (registering a new PACE in
+     * the catalog first) and close the request.
      */
     public function give(GivePaceRequestRequest $request, PaceRequest $paceRequest): PaceRequestResource
     {
@@ -71,6 +73,60 @@ class PaceRequestController extends Controller
         return new PaceRequestResource(
             $this->paceRequests->give($paceRequest, $request->user(), $request->validated())
         );
+    }
+
+    /**
+     * Give or decline several pending requests in one go (`action` = give | decline, `ids`,
+     * an optional `decision_note` for all). They are decided oldest first, each on its own:
+     * the ones that cannot be (pool too small, PACE not in the catalog yet, already decided)
+     * stay as they were and come back under `skipped` with the reason.
+     */
+    public function batch(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'action' => ['required', 'string', Rule::in(['give', 'decline'])],
+            'ids' => ['required', 'array', 'min:1', 'max:100'],
+            'ids.*' => ['integer', 'distinct'],
+            'decision_note' => ['nullable', 'string', 'max:255'],
+        ], [
+            'ids.required' => 'Select at least one request.',
+            'ids.min' => 'Select at least one request.',
+            'ids.max' => 'Decide at most 100 requests at a time.',
+        ]);
+
+        $requests = PaceRequest::query()
+            ->with(['teacher.branch', 'pace', 'organization'])
+            ->whereIn('id', $data['ids'])
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->get();
+
+        // A request that does not exist or is not in this admin's scope is "not found" for the whole batch.
+        abort_if($requests->count() !== count($data['ids']), 404, 'Not Found.');
+
+        foreach ($requests as $paceRequest) {
+            $this->assertInScope($request, $paceRequest->organization_id);
+        }
+
+        $note = $data['decision_note'] ?? null;
+
+        $result = $data['action'] === 'give'
+            ? $this->paceRequests->giveMany($requests, $request->user(), $note)
+            : $this->paceRequests->declineMany($requests, $request->user(), $note);
+
+        return response()->json([
+            'data' => [
+                'done' => PaceRequestResource::collection($result['done'])->resolve($request),
+                'skipped' => array_map(static fn (array $row): array => [
+                    'id' => $row['request']->id,
+                    'teacher_name' => $row['request']->teacher?->name ?? '',
+                    'pace_number' => $row['request']->pace_number,
+                    'pace_name' => $row['request']->pace_name,
+                    'quantity' => (int) $row['request']->quantity,
+                    'reason' => $row['reason'],
+                ], $result['skipped']),
+            ],
+        ]);
     }
 
     /**

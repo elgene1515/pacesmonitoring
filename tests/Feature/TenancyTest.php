@@ -20,7 +20,10 @@ class TenancyTest extends ApiTestCase
     public function test_an_admin_signs_up_and_registers_an_organization_with_branches(): void
     {
         $this->postJson('/api/register', [
-            'name' => 'Ada Admin',
+            'first_name' => 'Ada',
+            'last_name' => 'Admin',
+            'phone' => '0917 123 4567',
+            'terms' => true,
             'email' => 'ada@example.com',
             'password' => 'secret-password',
             'password_confirmation' => 'secret-password',
@@ -43,12 +46,24 @@ class TenancyTest extends ApiTestCase
             ->assertUnprocessable()
             ->assertJsonValidationErrors(['branches']);
 
+        $twoBranches = [
+            ['name' => 'North Annex', 'address' => '5 North Rd'],
+            ['name' => 'Main Campus', 'address' => '12 Hill St', 'is_main' => true],
+        ];
+
+        // The free trial runs on the Starter plan, which allows one branch: two are refused.
+        $this->postJson('/api/organizations', ['name' => 'Sunrise Christian School', 'branches' => $twoBranches])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['branches']);
+        $this->assertDatabaseMissing('organizations', ['name' => 'Sunrise Christian School']);
+
+        // Signing up for a plan with room for them (Growth: 2 branches) is fine.
+        $growth = Plan::query()->where('slug', 'growth')->firstOrFail();
+
         $response = $this->postJson('/api/organizations', [
             'name' => 'Sunrise Christian School',
-            'branches' => [
-                ['name' => 'North Annex', 'address' => '5 North Rd'],
-                ['name' => 'Main Campus', 'address' => '12 Hill St', 'is_main' => true],
-            ],
+            'branches' => $twoBranches,
+            'plan_id' => $growth->id,
         ])
             ->assertCreated()
             ->assertJsonPath('data.organization.name', 'Sunrise Christian School')
@@ -82,10 +97,39 @@ class TenancyTest extends ApiTestCase
             ->assertJsonPath('data.branch.is_main', true);
     }
 
+    public function test_the_branches_named_at_sign_up_must_fit_the_chosen_plan(): void
+    {
+        $growth = Plan::query()->where('slug', 'growth')->firstOrFail();
+        $three = [['name' => 'One'], ['name' => 'Two'], ['name' => 'Three']];
+
+        $this->signIn(User::factory()->admin()->unassigned()->create());
+
+        // The plan list says which plan the free trial runs on, so the form can show its limit.
+        $this->getJson('/api/plans')
+            ->assertOk()
+            ->assertJsonPath('data.0.slug', 'starter')
+            ->assertJsonPath('data.0.is_trial_default', true)
+            ->assertJsonPath('data.1.is_trial_default', false);
+
+        // Growth allows two branches, not three.
+        $this->postJson('/api/organizations', ['name' => 'Too Many', 'branches' => $three, 'plan_id' => $growth->id])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['branches']);
+
+        $this->postJson('/api/organizations', [
+            'name' => 'Just Right',
+            'branches' => [['name' => 'One'], ['name' => 'Two']],
+            'plan_id' => $growth->id,
+        ])->assertCreated()->assertJsonPath('data.organization.branches_count', 2);
+    }
+
     public function test_sign_up_requires_a_registrable_role(): void
     {
         $this->postJson('/api/register', [
-            'name' => 'Someone',
+            'first_name' => 'Someone',
+            'last_name' => 'Tester',
+            'phone' => '0917 123 4567',
+            'terms' => true,
             'email' => 'someone@example.com',
             'password' => 'secret-password',
             'password_confirmation' => 'secret-password',
@@ -94,7 +138,10 @@ class TenancyTest extends ApiTestCase
             ->assertJsonValidationErrors(['role']);
 
         $this->postJson('/api/register', [
-            'name' => 'Someone',
+            'first_name' => 'Someone',
+            'last_name' => 'Tester',
+            'phone' => '0917 123 4567',
+            'terms' => true,
             'email' => 'someone@example.com',
             'password' => 'secret-password',
             'password_confirmation' => 'secret-password',
@@ -112,7 +159,10 @@ class TenancyTest extends ApiTestCase
         $main = $organization->branches()->where('is_main', true)->firstOrFail();
 
         $this->postJson('/api/register', [
-            'name' => 'Tim Teacher',
+            'first_name' => 'Tim',
+            'last_name' => 'Teacher',
+            'phone' => '0917 123 4567',
+            'terms' => true,
             'email' => 'tim@example.com',
             'password' => 'secret-password',
             'password_confirmation' => 'secret-password',
@@ -446,20 +496,29 @@ class TenancyTest extends ApiTestCase
         $teacher = $this->teacher($organization);
         $admin = $this->admin($organization);
         $pace = $this->pace([], $teacher);
+        $section = $this->section($this->gradeLevel('Grade 1', $teacher), $teacher);
 
         $organization->currentSubscription->update(['ends_at' => Carbon::yesterday()->toDateString()]);
 
         $this->signIn($teacher);
 
         $this->getJson('/api/paces')->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson('/api/students')->assertOk();
 
-        $this->postJson('/api/paces', ['name' => 'Math', 'number' => '1001'])
+        $this->postJson('/api/students', [
+            'first_name' => 'Ana',
+            'last_name' => 'Cruz',
+            'birth_date' => '2015-01-01',
+            'age' => 11,
+            'sex' => 'female',
+            'section_id' => $section->id,
+        ])
             ->assertForbidden()
             ->assertJsonPath('code', 'subscription_inactive');
 
-        $this->putJson('/api/paces/'.$pace->id, ['name' => 'Renamed', 'number' => $pace->number])->assertForbidden();
-        $this->deleteJson('/api/paces/'.$pace->id)->assertForbidden();
-        $this->assertDatabaseHas('paces', ['id' => $pace->id, 'name' => $pace->name]);
+        $this->postJson('/api/pace-requests', ['pace_id' => $pace->id, 'quantity' => 1])->assertForbidden();
+        $this->assertDatabaseCount('students', 0);
+        $this->assertDatabaseCount('pace_requests', 0);
 
         $this->getJson('/api/user')
             ->assertOk()
@@ -471,7 +530,11 @@ class TenancyTest extends ApiTestCase
         $this->signIn($admin);
 
         $this->getJson('/api/admin/dashboard/summary')->assertOk();
+        $this->getJson('/api/admin/paces')->assertOk()->assertJsonCount(1, 'data');
         $this->postJson('/api/admin/branches', ['name' => 'New'])->assertForbidden();
+        $this->putJson('/api/admin/paces/'.$pace->id, ['name' => 'Renamed', 'number' => $pace->number])->assertForbidden();
+        $this->deleteJson('/api/admin/paces/'.$pace->id)->assertForbidden();
+        $this->assertDatabaseHas('paces', ['id' => $pace->id, 'name' => $pace->name]);
     }
 
     public function test_a_past_due_subscription_still_allows_changes(): void
@@ -480,7 +543,7 @@ class TenancyTest extends ApiTestCase
         $organization->currentSubscription->update(['status' => SubscriptionStatus::PastDue]);
         $this->signIn($this->teacher($organization));
 
-        $this->postJson('/api/paces', ['name' => 'Math', 'number' => '1001'])->assertCreated();
+        $this->postJson('/api/pace-requests', ['pace_number' => '1001', 'pace_name' => 'Math', 'quantity' => 1])->assertCreated();
     }
 
     /* -------------------------------------------------------------- owner */
@@ -606,7 +669,7 @@ class TenancyTest extends ApiTestCase
         // The renewed organization can write again.
         $this->forgetGuards();
         $this->signIn($teacher);
-        $this->postJson('/api/paces', ['name' => 'Math', 'number' => '1001'])->assertCreated();
+        $this->postJson('/api/pace-requests', ['pace_number' => '1001', 'pace_name' => 'Math', 'quantity' => 1])->assertCreated();
     }
 
     public function test_the_owner_manages_plans(): void

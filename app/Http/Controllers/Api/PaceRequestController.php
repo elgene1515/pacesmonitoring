@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Enums\PaceRequestStatus;
 use App\Http\Controllers\Controller;
+use App\Http\Requests\PaceRequest\BatchPaceRequestRequest;
 use App\Http\Requests\PaceRequest\StorePaceRequestRequest;
 use App\Http\Requests\PaceRequest\UpdatePaceRequestRequest;
 use App\Http\Resources\PaceRequestResource;
@@ -46,6 +47,19 @@ class PaceRequestController extends Controller
         $paceRequest = $this->paceRequests->submit($request->user(), $request->requestData());
 
         return (new PaceRequestResource($paceRequest))
+            ->response()
+            ->setStatusCode(Response::HTTP_CREATED);
+    }
+
+    /**
+     * Ask for booklets of several PACEs at once: one request per PACE, sharing
+     * the needed-by date and note (all or nothing).
+     */
+    public function storeBatch(BatchPaceRequestRequest $request): JsonResponse
+    {
+        $requests = $this->paceRequests->submitMany($request->user(), $request->items());
+
+        return PaceRequestResource::collection($requests)
             ->response()
             ->setStatusCode(Response::HTTP_CREATED);
     }

@@ -2,13 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { usePacesStore } from '../../stores/paces';
 import { usePaceRequestsStore } from '../../stores/paceRequests';
-import { notify } from '../../stores/notifications';
 import { pluralize } from '../../core/format';
-import PaceFormModal from '../paces/PaceFormModal.vue';
-import PaceRequestFormModal from '../paces/PaceRequestFormModal.vue';
-import StockControl from '../paces/StockControl.vue';
-import ConfirmDialog from '../ui/ConfirmDialog.vue';
+import BatchPaceRequestModal from '../paces/BatchPaceRequestModal.vue';
 import EmptyState from '../ui/EmptyState.vue';
+import StatusBadge from '../ui/StatusBadge.vue';
 import AppIcon from '../ui/AppIcon.vue';
 import PaceRecordsBar from '../charts/PaceRecordsBar.vue';
 import PaceRecordsLegend from '../charts/PaceRecordsLegend.vue';
@@ -22,23 +19,19 @@ const RECORDS_OPTIONS = [
     { value: 'without', label: 'Without records' },
 ];
 
+/** Narrows by the teacher's own booklets. */
 const STOCK_OPTIONS = [
     { value: '', label: 'Any stock' },
-    { value: 'in', label: 'In stock' },
-    { value: 'low', label: 'Low stock' },
-    { value: 'out', label: 'Out of stock' },
+    { value: 'in', label: 'I hold some' },
+    { value: 'low', label: 'I am running low' },
+    { value: 'out', label: 'I hold none' },
 ];
 
 const paces = usePacesStore();
 const paceRequests = usePaceRequestsStore();
 
-const modalOpen = ref(false);
-const editing = ref(null);
-const deleting = ref(null);
-const removing = ref(false);
-
-const requestOpen = ref(false);
-const requestFor = ref(null);
+/** The stock request dialog (one or several PACEs at once). */
+const batchOpen = ref(false);
 
 /** '' (all) | 'with' | 'without': narrows the loaded list by whether a PACE has records. */
 const recordsFilter = ref('');
@@ -75,26 +68,9 @@ const visible = computed(() => {
 
 const outOfStockCount = computed(() => paces.items.filter((pace) => pace.isOutOfStock).length);
 
-const emptyMessage = computed(() => (hasFilters.value ? 'No PACEs match your filters.' : 'No PACEs registered yet.'));
-
-function openCreate() {
-    editing.value = null;
-    modalOpen.value = true;
-}
-
-function openEdit(pace) {
-    editing.value = pace;
-    modalOpen.value = true;
-}
-
-function openRequest(pace = null) {
-    requestFor.value = pace;
-    requestOpen.value = true;
-}
-
-function onSaved() {
-    paces.fetch();
-}
+const emptyMessage = computed(() => (hasFilters.value
+    ? 'No PACEs match your filters.'
+    : 'Your branch has no PACEs in its catalog yet. Ask your school admin for the booklets you need; a new PACE number can be requested too.'));
 
 function onRequestSaved() {
     // The PACE's pending-request count comes from the server.
@@ -106,25 +82,6 @@ function clearFilters() {
     stockFilter.value = '';
     paces.resetFilters();
     paces.fetch();
-}
-
-async function confirmRemove() {
-    if (removing.value || !deleting.value) {
-        return;
-    }
-
-    const target = deleting.value;
-    removing.value = true;
-
-    try {
-        await paces.remove(target.id);
-        notify.success(`PACE ${target.label} deleted.`);
-        deleting.value = null;
-    } catch (err) {
-        notify.error(err?.message ?? 'Unable to delete the PACE.');
-    } finally {
-        removing.value = false;
-    }
 }
 
 watch(
@@ -148,7 +105,13 @@ onBeforeUnmount(() => {
 <template>
     <div class="paces">
         <div class="page-header">
-            <h1>PACEs</h1>
+            <div>
+                <h1>PACEs</h1>
+                <p class="muted subtitle">
+                    Your branch's PACE catalog. Issuing a PACE to a student takes one of your own booklets;
+                    ask your school admin for more from the branch pool.
+                </p>
+            </div>
             <div class="page-actions">
                 <RouterLink :to="{ name: 'pace-requests' }" class="btn btn-secondary">
                     Stock requests
@@ -160,8 +123,7 @@ onBeforeUnmount(() => {
                         {{ paceRequests.pendingCount }}
                     </span>
                 </RouterLink>
-                <button type="button" class="btn btn-secondary" @click="openRequest()">Request stock</button>
-                <button type="button" class="btn" @click="openCreate">Register PACE</button>
+                <button type="button" class="btn" @click="batchOpen = true">Request Stock</button>
             </div>
         </div>
 
@@ -195,7 +157,7 @@ onBeforeUnmount(() => {
                         <template v-if="paces.loading">Loading…</template>
                         <template v-else>
                             {{ pluralize(visible.length, 'PACE') }}
-                            <template v-if="outOfStockCount > 0"> · <span class="text-danger">{{ outOfStockCount }} out of stock</span></template>
+                            <template v-if="outOfStockCount > 0"> · <span class="text-danger">{{ outOfStockCount }} with none of yours</span></template>
                         </template>
                     </span>
                     <PaceRecordsLegend v-if="visible.length > 0" :order="RECORD_ORDER" />
@@ -209,7 +171,7 @@ onBeforeUnmount(() => {
                     <button v-if="hasFilters" type="button" class="btn btn-secondary btn-sm" @click="clearFilters">
                         Clear filters
                     </button>
-                    <button v-else type="button" class="btn btn-secondary btn-sm" @click="openCreate">Register PACE</button>
+                    <button v-else type="button" class="btn btn-secondary btn-sm" @click="batchOpen = true">Request Stock</button>
                 </template>
             </EmptyState>
 
@@ -220,6 +182,7 @@ onBeforeUnmount(() => {
                         <col class="col-number" />
                         <col class="col-name" />
                         <col class="col-stock" />
+                        <col class="col-pool" />
                         <col class="col-records" />
                         <col class="col-actions" />
                     </colgroup>
@@ -227,7 +190,8 @@ onBeforeUnmount(() => {
                         <tr>
                             <th>Number</th>
                             <th>Name</th>
-                            <th>Stock</th>
+                            <th>Your stock</th>
+                            <th class="text-right">Pool</th>
                             <th>PACE records</th>
                             <th class="table-actions"><span class="sr-only">Actions</span></th>
                         </tr>
@@ -241,7 +205,8 @@ onBeforeUnmount(() => {
                             </td>
                             <td class="name">{{ pace.name }}</td>
                             <td class="stock-cell">
-                                <StockControl :pace="pace" compact />
+                                <span class="mono stock-value" :class="`level-${pace.stockLevel}`">{{ pace.stock }}</span>
+                                <StatusBadge :tone="pace.stockTone">{{ pace.stockLabel }}</StatusBadge>
                                 <RouterLink
                                     v-if="pace.hasPendingRequest"
                                     :to="{ name: 'pace-requests' }"
@@ -251,6 +216,7 @@ onBeforeUnmount(() => {
                                     Request pending
                                 </RouterLink>
                             </td>
+                            <td class="mono text-right" title="Booklets your school admin has on hand for the branch">{{ pace.poolStock }}</td>
                             <td class="records">
                                 <PaceRecordsBar
                                     :total="pace.assignmentsCount"
@@ -270,33 +236,6 @@ onBeforeUnmount(() => {
                                 >
                                     <AppIcon name="eye" />
                                 </RouterLink>
-                                <button
-                                    type="button"
-                                    class="btn btn-link btn-sm btn-icon"
-                                    :title="`Request stock for PACE ${pace.label}`"
-                                    :aria-label="`Request stock for PACE ${pace.label}`"
-                                    @click="openRequest(pace)"
-                                >
-                                    <AppIcon name="box" />
-                                </button>
-                                <button
-                                    type="button"
-                                    class="btn btn-link btn-sm btn-icon"
-                                    :title="`Edit PACE ${pace.label}`"
-                                    :aria-label="`Edit PACE ${pace.label}`"
-                                    @click="openEdit(pace)"
-                                >
-                                    <AppIcon name="pencil" />
-                                </button>
-                                <button
-                                    type="button"
-                                    class="btn btn-link btn-sm btn-icon text-danger"
-                                    :title="`Delete PACE ${pace.label}`"
-                                    :aria-label="`Delete PACE ${pace.label}`"
-                                    @click="deleting = pace"
-                                >
-                                    <AppIcon name="trash" />
-                                </button>
                             </td>
                         </tr>
                     </tbody>
@@ -304,23 +243,8 @@ onBeforeUnmount(() => {
             </div>
         </div>
 
-        <PaceFormModal v-model="modalOpen" :pace="editing" @saved="onSaved" />
+        <BatchPaceRequestModal v-model="batchOpen" @saved="onRequestSaved" />
 
-        <PaceRequestFormModal v-model="requestOpen" :pace="requestFor" @saved="onRequestSaved" />
-
-        <ConfirmDialog
-            :model-value="deleting !== null"
-            title="Delete PACE"
-            :busy="removing"
-            @update:model-value="deleting = null"
-            @confirm="confirmRemove"
-        >
-            Delete PACE <strong v-if="deleting">{{ deleting.label }}</strong>?
-            <template v-if="deleting && deleting.assignmentsCount">
-                It is assigned to {{ pluralize(deleting.assignmentsCount, 'student record') }}; those records will be deleted as well.
-            </template>
-            This cannot be undone.
-        </ConfirmDialog>
     </div>
 </template>
 
@@ -409,7 +333,31 @@ onBeforeUnmount(() => {
 }
 
 .col-stock {
-    width: 230px;
+    width: 200px;
+}
+
+.col-pool {
+    width: 80px;
+}
+
+.subtitle {
+    margin: 4px 0 0;
+    max-width: 640px;
+}
+
+.stock-value {
+    display: inline-block;
+    min-width: 2.5ch;
+    margin-right: 6px;
+    font-weight: 600;
+}
+
+.stock-value.level-out {
+    color: var(--danger);
+}
+
+.stock-value.level-low {
+    color: var(--warn-text);
 }
 
 .col-records {
@@ -417,7 +365,7 @@ onBeforeUnmount(() => {
 }
 
 .col-actions {
-    width: 150px;
+    width: 56px;
 }
 
 .number {

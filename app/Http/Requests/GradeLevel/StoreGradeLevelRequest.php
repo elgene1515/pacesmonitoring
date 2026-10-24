@@ -6,57 +6,57 @@ use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Unique;
 
+/**
+ * An admin registers a grade level in one of the organization's branches
+ * under one of its school years.
+ */
 class StoreGradeLevelRequest extends FormRequest
 {
-    /**
-     * Determine if the user is authorized to make this request.
-     */
     public function authorize(): bool
     {
         return true;
     }
 
     /**
-     * Get the validation rules that apply to the request.
-     *
      * @return array<string, mixed>
      */
     public function rules(): array
     {
         return [
-            'school_year_id' => [
+            'branch_id' => ['required', 'integer', Rule::exists('branches', 'id')],
+            'school_year_id' => ['required', 'integer', Rule::exists('school_years', 'id')],
+            'name' => [
                 'required',
-                'integer',
-                Rule::exists('school_years', 'id')->where('organization_id', $this->user()?->organization_id),
+                'string',
+                'max:100',
+                $this->uniqueName((int) $this->input('branch_id'), (int) $this->input('school_year_id')),
             ],
-            'name' => ['required', 'string', 'max:100', $this->uniqueName((int) $this->input('school_year_id'))],
             'sort_order' => ['nullable', 'integer', 'min:0', 'max:65535'],
         ];
     }
 
     /**
-     * Custom validation messages.
-     *
      * @return array<string, string>
      */
     public function messages(): array
     {
         return [
+            'branch_id.required' => 'Please select the branch this grade level belongs to.',
+            'branch_id.exists' => 'The selected branch is invalid.',
             'school_year_id.required' => 'Please select the school year this grade level belongs to.',
             'school_year_id.exists' => 'The selected school year is invalid.',
-            'name.unique' => 'You already have a grade level with this name in that school year.',
+            'name.unique' => 'This branch already has a grade level with this name in that school year.',
             'sort_order.min' => 'The sort order must be 0 or greater.',
         ];
     }
 
     /**
-     * Custom attribute names used in error messages.
-     *
      * @return array<string, string>
      */
     public function attributes(): array
     {
         return [
+            'branch_id' => 'branch',
             'school_year_id' => 'school year',
             'sort_order' => 'sort order',
         ];
@@ -83,12 +83,12 @@ class StoreGradeLevelRequest extends FormRequest
     }
 
     /**
-     * Grade level names only need to be unique among the current user's levels in one school year.
+     * Grade level names are unique within a branch's school year.
      */
-    protected function uniqueName(int $schoolYearId): Unique
+    protected function uniqueName(int $branchId, int $schoolYearId): Unique
     {
         return Rule::unique('grade_levels', 'name')
-            ->where('user_id', $this->user()?->id)
+            ->where('branch_id', $branchId)
             ->where('school_year_id', $schoolYearId);
     }
 }

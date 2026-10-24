@@ -18,7 +18,7 @@ export const PACE_REQUEST_STATUS_LABELS = Object.freeze({
 /**
  * A teacher's request to their school admin for PACE booklets.
  *
- * API shape: {id, organization_id, user_id, pace_id, pace_number, pace_name, quantity, needed_by, message,
+ * API shape: {id, organization_id, branch_id, user_id, pace_id, pace_number, pace_name, quantity, needed_by, message,
  *             status, decision_note, teacher?: {id, name, email, branch?: {id, name}}, pace?: Pace,
  *             organization?: {id, name, code}, decided_by?: {id, name}, decided_at, created_at, updated_at}
  */
@@ -26,6 +26,7 @@ export default class PaceRequest {
     constructor({
         id = null,
         organizationId = null,
+        branchId = null,
         userId = null,
         paceId = null,
         paceNumber = '',
@@ -45,8 +46,10 @@ export default class PaceRequest {
     } = {}) {
         this.id = id;
         this.organizationId = organizationId;
+        /** The branch whose catalog and pool the request is about. */
+        this.branchId = branchId;
         this.userId = userId;
-        /** The teacher's registered PACE this is for, or null when they named one by number and name. */
+        /** The catalog PACE this is for, or null when the teacher named one not in the catalog yet. */
         this.paceId = paceId;
         this.paceNumber = paceNumber;
         this.paceName = paceName;
@@ -89,7 +92,7 @@ export default class PaceRequest {
         return this.status === PACE_REQUEST_STATUSES.CANCELLED;
     }
 
-    /** True while the request points at one of the teacher's registered PACEs. */
+    /** True while the request points at a PACE already in the branch's catalog. */
     get isLinked() {
         return this.paceId !== null && this.paceId !== undefined;
     }
@@ -156,6 +159,7 @@ export default class PaceRequest {
         return new PaceRequest({
             id: json.id ?? null,
             organizationId: json.organization_id ?? null,
+            branchId: json.branch_id ?? null,
             userId: json.user_id ?? null,
             paceId: json.pace_id ?? null,
             paceNumber: json.pace_number ?? '',

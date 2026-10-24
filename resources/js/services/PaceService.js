@@ -1,33 +1,33 @@
-import ResourceService from './ResourceService';
 import Pace from '../models/Pace';
 
 /**
- * /api/paces
+ * The branch's PACE catalog as a teacher sees it (read-only), with the
+ * teacher's own booklets (`myStock`) next to the branch pool. Teachers ask
+ * for booklets through PaceRequestService; the admin keeps the catalog and
+ * the stock through AdminService.
  *
- *  list(filters)          filters: { search?: string } -> Pace[] (with assignmentsCount, stock)
- *  get(id)                -> Pace (with assignments[student, subject])
- *  create(payload)        payload: Pace | {name, number, stock?} -> Pace
- *  createRange(payload)   payload: {name, start, end, stock?} -> Pace[], one per number in the range
- *  update(id, payload)    -> Pace
- *  adjustStock(id, delta) PATCH {basePath}/{id}/stock {delta} -> Pace (delta: booklets to add, negative to remove)
- *  remove(id)             -> void
+ *  list(filters)   GET /api/paces?search=   -> Pace[] (with assignmentsCount, myStock, poolStock)
+ *  get(id)         GET /api/paces/{id}      -> Pace (with assignments[student, subject], pendingRequestsCount)
  */
-export default class PaceService extends ResourceService {
+export default class PaceService {
+    /**
+     * @param {import('../core/ApiClient').default} api
+     */
     constructor(api) {
-        super(api, '/paces', Pace);
+        this.api = api;
     }
 
-    /** POST {basePath}/range -> Pace[] */
-    async createRange(payload) {
-        await this.api.ensureCsrf();
-        const body = await this.api.post(`${this.basePath}/range`, payload);
-        return this.model.collection(body?.data);
+    itemPath(id) {
+        return `/paces/${encodeURIComponent(id)}`;
     }
 
-    /** PATCH {basePath}/{id}/stock -> Pace */
-    async adjustStock(id, delta) {
-        await this.api.ensureCsrf();
-        const body = await this.api.patch(`${this.itemPath(id)}/stock`, { delta: Number(delta) });
-        return this.model.fromJson(body?.data);
+    async list(filters = {}) {
+        const body = await this.api.get('/paces', filters);
+        return Pace.collection(body?.data);
+    }
+
+    async get(id) {
+        const body = await this.api.get(this.itemPath(id));
+        return Pace.fromJson(body?.data);
     }
 }

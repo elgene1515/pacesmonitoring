@@ -8,6 +8,7 @@ use App\Http\Requests\Owner\StoreStaffRequest;
 use App\Http\Requests\Owner\UpdateStaffRoleRequest;
 use App\Http\Resources\UserResource;
 use App\Models\User;
+use App\Support\PersonDetails;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -35,8 +36,10 @@ class StaffController extends Controller
      */
     public function store(StoreStaffRequest $request): JsonResponse
     {
-        $user = new User([
-            'name' => $request->validated('name'),
+        $person = $request->person();
+
+        $user = new User($person + [
+            'name' => PersonDetails::fullName($person['first_name'], $person['middle_name'], $person['last_name'], $person['suffix']),
             'email' => $request->validated('email'),
             'password' => Hash::make($request->validated('password')),
         ]);

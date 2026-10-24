@@ -26,7 +26,18 @@ const staff = ref([]);
 const loading = ref(true);
 
 const modalOpen = ref(false);
-const form = reactive({ name: '', email: '', password: '', password_confirmation: '', role: ROLES.VICE_ADMIN });
+const form = reactive({
+    first_name: '',
+    middle_name: '',
+    last_name: '',
+    suffix: '',
+    phone: '',
+    address: '',
+    email: '',
+    password: '',
+    password_confirmation: '',
+    role: ROLES.VICE_ADMIN,
+});
 const errors = ref({});
 const saving = ref(false);
 
@@ -42,7 +53,12 @@ const ROLE_OPTIONS = [
 ];
 
 function open() {
-    form.name = '';
+    form.first_name = '';
+    form.middle_name = '';
+    form.last_name = '';
+    form.suffix = '';
+    form.phone = '';
+    form.address = '';
     form.email = '';
     form.password = '';
     form.password_confirmation = '';
@@ -54,8 +70,18 @@ function open() {
 function validate() {
     const next = {};
 
-    if (!form.name.trim()) {
-        next.name = ['Name is required.'];
+    if (!form.first_name.trim()) {
+        next.first_name = ['First name is required.'];
+    }
+
+    if (!form.last_name.trim()) {
+        next.last_name = ['Surname is required.'];
+    }
+
+    if (!form.phone.trim()) {
+        next.phone = ['Contact number is required.'];
+    } else if (!/^\+?[0-9 ()\-.]{7,30}$/.test(form.phone.trim())) {
+        next.phone = ['Enter a contact number using digits (spaces, dashes, brackets and a leading + are fine).'];
     }
 
     if (!form.email.trim()) {
@@ -84,7 +110,12 @@ async function save() {
 
     try {
         const created = await ownerService.createStaff({
-            name: form.name.trim(),
+            first_name: form.first_name.trim(),
+            middle_name: form.middle_name.trim() || null,
+            last_name: form.last_name.trim(),
+            suffix: form.suffix.trim() || null,
+            phone: form.phone.trim(),
+            address: form.address.trim() || null,
             email: form.email.trim(),
             password: form.password,
             password_confirmation: form.password_confirmation,
@@ -207,7 +238,10 @@ onMounted(load);
                                 <span class="name">{{ member.name }}</span>
                                 <span v-if="member.id === auth.user?.id" class="muted"> (you)</span>
                             </td>
-                            <td class="ellipsis muted">{{ member.email }}</td>
+                            <td class="ellipsis muted">
+                                {{ member.email }}
+                                <span v-if="member.phone" class="small">{{ member.phone }}</span>
+                            </td>
                             <td>
                                 <select
                                     class="input role-select"
@@ -246,7 +280,7 @@ onMounted(load);
             </div>
         </div>
 
-        <AppModal :model-value="modalOpen" title="Add staff account" width="460px" :closable="!saving" :close-on-backdrop="false" @update:model-value="modalOpen = false">
+        <AppModal :model-value="modalOpen" title="Add staff account" width="520px" :closable="!saving" :close-on-backdrop="false" @update:model-value="modalOpen = false">
             <form v-if="modalOpen" class="form" novalidate @submit.prevent="save">
                 <AppField label="Role" :error="errors.role" required>
                     <div class="roles">
@@ -259,8 +293,25 @@ onMounted(load);
                         </label>
                     </div>
                 </AppField>
-                <AppField label="Full name" for="staff-name" :error="errors.name" required>
-                    <input id="staff-name" v-model="form.name" class="input" type="text" :disabled="saving" />
+                <div class="pair">
+                    <AppField label="First name" for="staff-first-name" :error="errors.first_name" required>
+                        <input id="staff-first-name" v-model="form.first_name" class="input" type="text" autocomplete="off" maxlength="100" :disabled="saving" />
+                    </AppField>
+                    <AppField label="Middle name" for="staff-middle-name" :error="errors.middle_name">
+                        <input id="staff-middle-name" v-model="form.middle_name" class="input" type="text" autocomplete="off" maxlength="100" :disabled="saving" />
+                    </AppField>
+                    <AppField label="Surname" for="staff-last-name" :error="errors.last_name" required>
+                        <input id="staff-last-name" v-model="form.last_name" class="input" type="text" autocomplete="off" maxlength="100" :disabled="saving" />
+                    </AppField>
+                    <AppField label="Suffix" for="staff-suffix" :error="errors.suffix" hint="e.g. Jr., III">
+                        <input id="staff-suffix" v-model="form.suffix" class="input" type="text" autocomplete="off" maxlength="20" :disabled="saving" />
+                    </AppField>
+                </div>
+                <AppField label="Contact number" for="staff-phone" :error="errors.phone" required>
+                    <input id="staff-phone" v-model="form.phone" class="input" type="tel" inputmode="tel" autocomplete="off" maxlength="30" placeholder="e.g. 0917 123 4567" :disabled="saving" />
+                </AppField>
+                <AppField label="Address" for="staff-address" :error="errors.address" hint="Optional.">
+                    <input id="staff-address" v-model="form.address" class="input" type="text" autocomplete="off" maxlength="500" :disabled="saving" />
                 </AppField>
                 <AppField label="Email" for="staff-email" :error="errors.email" required>
                     <input id="staff-email" v-model="form.email" class="input" type="email" :disabled="saving" />
@@ -367,6 +418,24 @@ onMounted(load);
     display: flex;
     flex-direction: column;
     gap: 14px;
+}
+
+/* First / middle name and surname / suffix side by side. */
+.pair {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 12px;
+}
+
+td .small {
+    display: block;
+    font-size: 0.82rem;
+}
+
+@media (max-width: 480px) {
+    .pair {
+        grid-template-columns: 1fr;
+    }
 }
 
 .roles {

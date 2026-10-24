@@ -5,9 +5,9 @@ namespace App\Http\Requests\Pace;
 use Illuminate\Foundation\Http\FormRequest;
 
 /**
- * Add (positive) or remove (negative) booklets from a PACE's stock.
+ * Correct the pool count (lost, damaged, miscounted booklets).
  */
-class AdjustPaceStockRequest extends FormRequest
+class AdjustPoolRequest extends FormRequest
 {
     public function authorize(): bool
     {
@@ -21,6 +21,7 @@ class AdjustPaceStockRequest extends FormRequest
     {
         return [
             'delta' => ['required', 'integer', 'not_in:0', 'min:-1000000', 'max:1000000'],
+            'note' => ['nullable', 'string', 'max:255'],
         ];
     }
 
@@ -37,5 +38,12 @@ class AdjustPaceStockRequest extends FormRequest
     public function delta(): int
     {
         return (int) $this->validated('delta');
+    }
+
+    public function note(): ?string
+    {
+        $note = trim((string) $this->validated('note', ''));
+
+        return $note === '' ? null : $note;
     }
 }

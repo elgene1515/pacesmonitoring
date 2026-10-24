@@ -33,6 +33,7 @@ class PaceRequestFactory extends Factory
             'user_id' => User::factory(),
             'organization_id' => fn (array $attributes) => User::query()->find($attributes['user_id'])?->organization_id
                 ?? Organization::factory()->create()->id,
+            'branch_id' => fn (array $attributes) => User::query()->whereKey($attributes['user_id'])->value('branch_id'),
             'pace_id' => null,
             'pace_number' => (string) fake()->numberBetween(1001, 1144),
             'pace_name' => ucfirst(fake()->word()),
@@ -44,18 +45,25 @@ class PaceRequestFactory extends Factory
     }
 
     /**
-     * A request for one of the teacher's registered PACEs (filed by its owner).
+     * A request for a PACE already in the branch's catalog, filed by a teacher
+     * of that branch.
      *
      * @return static
      */
-    public function forPace(Pace $pace)
+    public function forPace(Pace $pace, ?User $teacher = null)
     {
-        return $this->state(fn (array $attributes) => [
-            'user_id' => $pace->created_by,
-            'organization_id' => $pace->creator?->organization_id,
-            'pace_id' => $pace->id,
-            'pace_number' => $pace->number,
-            'pace_name' => $pace->name,
-        ]);
+        return $this->state(function (array $attributes) use ($pace, $teacher) {
+            $branch = $pace->branch;
+            $teacher ??= User::factory()->inOrganization($branch->organization, $branch)->create();
+
+            return [
+                'user_id' => $teacher->id,
+                'organization_id' => $branch->organization_id,
+                'branch_id' => $branch->id,
+                'pace_id' => $pace->id,
+                'pace_number' => $pace->number,
+                'pace_name' => $pace->name,
+            ];
+        });
     }
 }

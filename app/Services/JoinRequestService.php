@@ -13,8 +13,10 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 /**
- * Teachers ask to join an organization's branch; that organization's admins
- * accept or decline. Accepting attaches the teacher to the organization.
+ * People ask to join an organization's branch, as a teacher or (admin-type
+ * accounts) as an administrator; that organization's admins accept, choosing
+ * the role within the plan's limits, or decline. Accepting attaches the
+ * person to the organization.
  */
 class JoinRequestService
 {
@@ -24,7 +26,7 @@ class JoinRequestService
      *
      * @throws \Illuminate\Validation\ValidationException
      */
-    public function submit(User $teacher, Organization $organization, Branch $branch, ?string $message = null): JoinRequest
+    public function submit(User $teacher, Organization $organization, Branch $branch, ?string $message = null, Role $requestedRole = Role::Teacher): JoinRequest
     {
         if ($teacher->hasOrganization()) {
             throw ValidationException::withMessages([
@@ -47,6 +49,7 @@ class JoinRequestService
         $request = $teacher->joinRequests()->create([
             'organization_id' => $organization->id,
             'branch_id' => $branch->id,
+            'requested_role' => $requestedRole->isPlatform() ? Role::Teacher->value : $requestedRole->value,
             'status' => JoinRequestStatus::Pending,
             'message' => $message !== null && trim($message) !== '' ? trim($message) : null,
         ]);
@@ -71,16 +74,24 @@ class JoinRequestService
     }
 
     /**
-     * An admin admits the teacher: the teacher joins the requested branch and
-     * any other pending request of theirs is withdrawn.
+     * An admin admits the person: they join the requested branch with the role
+     * the admin chose (`$as`; by default what they asked for), within the
+     * plan's teacher or admin limit, and any other pending request of theirs
+     * is withdrawn.
      *
      * @throws \Illuminate\Validation\ValidationException
      */
-    public function accept(JoinRequest $request, User $decider): JoinRequest
+    public function accept(JoinRequest $request, User $decider, ?Role $as = null): JoinRequest
     {
         $this->assertPending($request);
 
-        return DB::transaction(function () use ($request, $decider): JoinRequest {
+        $role = $as ?? $request->requestedRole();
+
+        if ($role->isPlatform()) {
+            throw ValidationException::withMessages(['role' => ['Pick teacher or administrator.']]);
+        }
+
+        return DB::transaction(function () use ($request, $decider, $role): JoinRequest {
             $teacher = $request->user()->lockForUpdate()->firstOrFail();
             $organization = $request->organization()->firstOrFail();
 
@@ -90,22 +101,24 @@ class JoinRequestService
                 ]);
             }
 
-            $limit = $organization->currentSubscription()->with('plan')->first()?->plan?->max_teachers;
+            $plan = $organization->currentSubscription()->with('plan')->first()?->plan;
+            $limit = $role === Role::Admin ? $plan?->max_admins : $plan?->max_teachers;
+            $used = $role === Role::Admin ? $organization->admins()->count() : $organization->teachers()->count();
 
-            if ($limit !== null && $organization->teachers()->count() >= $limit) {
+            if ($limit !== null && $used >= $limit) {
                 throw ValidationException::withMessages([
                     'request' => [sprintf(
-                        'Your plan allows up to %d %s. Contact %s to upgrade.',
+                        'Your plan allows up to %d %s. %s',
                         $limit,
-                        $limit === 1 ? 'teacher' : 'teachers',
-                        config('saas.support_email')
+                        $limit === 1 ? ($role === Role::Admin ? 'administrator' : 'teacher') : ($role === Role::Admin ? 'administrators' : 'teachers'),
+                        $role === Role::Admin ? 'Accept them as a teacher, or contact '.config('saas.support_email').' to upgrade.' : 'Contact '.config('saas.support_email').' to upgrade.'
                     )],
                 ]);
             }
 
             $branch = $request->branch ?? $organization->mainBranch()->first() ?? $organization->branches()->first();
 
-            $teacher->role = Role::Teacher;
+            $teacher->role = $role;
             $teacher->organization_id = $organization->id;
             $teacher->branch_id = $branch?->id;
             $teacher->current_school_year_id = null;

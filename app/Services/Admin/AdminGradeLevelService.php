@@ -2,12 +2,19 @@
 
 namespace App\Services\Admin;
 
+use App\Models\Branch;
 use App\Models\GradeLevel;
-use App\Models\PaceAssignment;
+use App\Models\Section;
 use App\Models\Subject;
+use App\Models\User;
 use App\Services\GradeLevelService;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 
+/**
+ * The admin side of the curriculum: every grade level, section and subject
+ * of the organization in scope, and the set-up actions.
+ */
 class AdminGradeLevelService
 {
     public function __construct(private readonly GradeLevelService $gradeLevels)
@@ -15,60 +22,141 @@ class AdminGradeLevelService
     }
 
     /**
-     * One teacher's grade levels with subjects and counts, newest school year
-     * first. `$schoolYearId` narrows the list to just that school year (used by
-     * the student masterlist's teacher -> school year -> grade level filters).
-     * A teacher outside the organization in scope yields an empty list.
+     * The grade levels in scope with subjects, sections and who teaches what,
+     * newest school year first. Filters: branch_id, teacher_id (the grade
+     * levels that teacher teaches in), school_year_id.
      *
+     * @param  array<string, mixed>  $filters
      * @return \Illuminate\Database\Eloquent\Collection<int, \App\Models\GradeLevel>
      */
-    public function listFor(int $teacherId, ?int $schoolYearId = null, ?int $organizationId = null): Collection
+    public function list(array $filters = [], ?int $organizationId = null): Collection
     {
-        $query = GradeLevel::query()
-            ->select('grade_levels.*')
-            ->leftJoin('school_years', 'school_years.id', '=', 'grade_levels.school_year_id')
-            ->where('grade_levels.user_id', $teacherId)
-            ->with(['schoolYear', 'subjects' => fn ($subjects) => $subjects->withCount(PaceAssignment::statusCounts())])
-            ->withCount(['students', 'subjects'])
-            ->orderByDesc('school_years.name')
-            ->orderBy('grade_levels.sort_order')
-            ->orderBy('grade_levels.name');
+        $scope = TeacherScope::fromFilters($filters, $organizationId);
 
-        TeacherScope::forOrganization($organizationId)->applyOwner($query, 'grade_levels.user_id');
-
-        if ($schoolYearId !== null) {
-            $query->where('grade_levels.school_year_id', $schoolYearId);
-        }
-
-        return $query->get();
+        return $this->gradeLevels->listQuery($scope->applyGradeLevels(GradeLevel::query()), $filters)
+            ->with(['sections' => fn ($sections) => $sections
+                ->when($scope->isSingleTeacher(), fn ($query) => $query->ownedBy($scope->teacherId))
+                ->withCount('students')
+                ->with(['teachingAssignments.teacher', 'subjects:subjects.id'])])
+            ->get();
     }
 
     /**
-     * A grade level of a teacher in scope with its subjects and every record
-     * under them (the same payload the teacher's own page uses). 404 outside
-     * the scope.
+     * A grade level in scope; 404 outside it.
      */
+    public function find(int $id, ?int $organizationId = null): GradeLevel
+    {
+        return GradeLevel::query()
+            ->when($organizationId !== null, fn (Builder $query) => $query->forOrganization($organizationId))
+            ->findOrFail($id);
+    }
+
+    public function findSection(int $id, ?int $organizationId = null): Section
+    {
+        return Section::query()
+            ->when($organizationId !== null, fn (Builder $query) => $query->forOrganization($organizationId))
+            ->findOrFail($id);
+    }
+
+    public function findSubject(int $id, ?int $organizationId = null): Subject
+    {
+        return Subject::query()
+            ->when($organizationId !== null, fn (Builder $query) => $query->whereHas('gradeLevel', fn (Builder $level) => $level->forOrganization($organizationId)))
+            ->findOrFail($id);
+    }
+
+    public function findBranch(int $id, ?int $organizationId = null): Branch
+    {
+        return Branch::query()
+            ->when($organizationId !== null, fn (Builder $query) => $query->where('organization_id', $organizationId))
+            ->findOrFail($id);
+    }
+
     public function detail(int $gradeLevelId, ?int $organizationId = null): GradeLevel
     {
-        $gradeLevel = TeacherScope::forOrganization($organizationId)
-            ->applyOwner(GradeLevel::query(), 'grade_levels.user_id')
-            ->findOrFail($gradeLevelId);
+        return $this->gradeLevels->detail($this->find($gradeLevelId, $organizationId));
+    }
 
-        return $this->gradeLevels->detail($gradeLevel);
+    public function subjectDetail(int $subjectId, ?int $organizationId = null): Subject
+    {
+        return $this->gradeLevels->subjectDetail($this->findSubject($subjectId, $organizationId));
+    }
+
+    public function sectionDetail(int $sectionId, ?int $organizationId = null): Section
+    {
+        return $this->gradeLevels->sectionDetail($this->findSection($sectionId, $organizationId));
     }
 
     /**
-     * A subject of a teacher in scope with its grade level (and the teacher who
-     * owns it, with their branch) and every record filed under it. 404 outside
-     * the scope.
+     * @param  array<string, mixed>  $data
      */
-    public function subjectDetail(int $subjectId, ?int $organizationId = null): Subject
+    public function create(Branch $branch, array $data, User $admin): GradeLevel
     {
-        $subject = Subject::query()
-            ->whereIn('grade_level_id', TeacherScope::forOrganization($organizationId)->applyOwner(GradeLevel::query(), 'grade_levels.user_id')->select('grade_levels.id'))
-            ->findOrFail($subjectId);
+        return $this->gradeLevels->create($branch, $data, $admin);
+    }
 
-        // loadMissing keeps the grade level (and its school year) the shared detail already loaded.
-        return $this->gradeLevels->subjectDetail($subject)->loadMissing('gradeLevel.user.branch');
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    public function update(GradeLevel $gradeLevel, array $data): GradeLevel
+    {
+        return $this->gradeLevels->update($gradeLevel, $data);
+    }
+
+    public function delete(GradeLevel $gradeLevel): void
+    {
+        $this->gradeLevels->delete($gradeLevel);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    public function createSubject(GradeLevel $gradeLevel, array $data): Subject
+    {
+        return $this->gradeLevels->createSubject($gradeLevel, $data);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    public function updateSubject(Subject $subject, array $data): Subject
+    {
+        return $this->gradeLevels->updateSubject($subject, $data);
+    }
+
+    public function deleteSubject(Subject $subject): void
+    {
+        $this->gradeLevels->deleteSubject($subject);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    public function createSection(GradeLevel $gradeLevel, array $data): Section
+    {
+        return $this->gradeLevels->createSection($gradeLevel, $data);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    public function updateSection(Section $section, array $data): Section
+    {
+        return $this->gradeLevels->updateSection($section, $data);
+    }
+
+    public function offerSubject(Section $section, Subject $subject): Section
+    {
+        return $this->gradeLevels->offerSubject($section, $subject);
+    }
+
+    public function withdrawSubject(Section $section, Subject $subject): Section
+    {
+        return $this->gradeLevels->withdrawSubject($section, $subject);
+    }
+
+    public function deleteSection(Section $section): void
+    {
+        $this->gradeLevels->deleteSection($section);
     }
 }

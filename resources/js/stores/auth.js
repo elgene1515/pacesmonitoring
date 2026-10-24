@@ -6,6 +6,8 @@ import { useSchoolYearsStore } from './schoolYears';
 import { useStudentsStore } from './students';
 import { usePacesStore } from './paces';
 import { usePaceRequestsStore } from './paceRequests';
+import { useTeachingStore } from './teaching';
+import { useStudentChangeRequestsStore } from './studentChangeRequests';
 import { useScopeStore } from './scope';
 
 /**
@@ -18,6 +20,8 @@ function resetDataStores() {
     useStudentsStore().reset();
     usePacesStore().reset();
     usePaceRequestsStore().reset();
+    useTeachingStore().reset();
+    useStudentChangeRequestsStore().reset();
     useScopeStore().reset();
 }
 
@@ -38,7 +42,8 @@ function resetDataStores() {
  *  bootstrap()       fetch /api/user; swallows 401 (and network errors) -> Promise<User|null>
  *  refresh()         re-fetch /api/user (after setup / join / subscription changes) -> Promise<User|null>
  *  login({email, password})                                        -> Promise<User>  (throws ApiError)
- *  register({name, email, password, password_confirmation, role})  -> Promise<User>  (throws ApiError)
+ *  register({first_name, middle_name?, last_name, suffix?, phone, address?, email, password, password_confirmation, role, terms})
+ *                                                                  -> Promise<User>  (throws ApiError)
  *  forgotPassword(email)                                           -> Promise<void>  (throws ApiError)
  *  resetPassword({token, email, password, password_confirmation})  -> Promise<void>  (throws ApiError)
  *  verifyEmail({id, hash, expires, signature})                     -> Promise<string> message; refreshes the user when it is theirs
@@ -46,7 +51,7 @@ function resetDataStores() {
  *  setupOrganization(payload)                                      -> Promise<User>  (throws ApiError)
  *  submitJoinRequest(payload) / cancelJoinRequest()                -> Promise<User>  (throws ApiError)
  *  logout()          -> Promise<void>; always clears local user, rethrows non-401 failures
- *  updateProfile({name, email})                                    -> Promise<User>  (throws ApiError)
+ *  updateProfile({first_name, middle_name, last_name, suffix, phone, address, email, current_password}) -> Promise<User>  (throws ApiError)
  *  updatePassword({current_password, password, password_confirmation}) -> Promise<void> (throws ApiError)
  *  setUser(user) / clear()
  */

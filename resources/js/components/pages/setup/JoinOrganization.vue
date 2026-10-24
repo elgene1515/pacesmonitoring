@@ -1,6 +1,6 @@
 <script setup>
 import { computed, reactive, ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { RouterLink, useRouter } from 'vue-router';
 import { useAuthStore } from '../../../stores/auth';
 import { notify } from '../../../stores/notifications';
 import { tenantService } from '../../../services';
@@ -9,9 +9,11 @@ import { formatDate } from '../../../core/format';
 import AppField from '../../ui/AppField.vue';
 
 /**
- * Second sign-up step for a teacher: look the school up by its code, pick a
- * branch and ask to join. While the request is pending this page shows its
- * status; once an admin accepts it the teacher is sent to their Home page.
+ * Second sign-up step for a teacher, or for an admin-type account joining a
+ * school that is already registered (as an administrator, if the accepting
+ * admin agrees and the plan has room): look the school up by its code, pick
+ * a branch and ask to join. While the request is pending this page shows its
+ * status; once an admin accepts it the person is sent to their Home page.
  */
 const auth = useAuthStore();
 const router = useRouter();
@@ -24,6 +26,9 @@ const cancelling = ref(false);
 const refreshing = ref(false);
 const fieldErrors = ref({});
 const formError = ref('');
+
+/** An admin-type account asks for the administrator role; a teacher joins as a teacher. */
+const asAdmin = computed(() => Boolean(auth.user?.isAdmin));
 
 const request = computed(() => auth.user?.joinRequest ?? null);
 const pending = computed(() => Boolean(request.value?.isPending));
@@ -84,6 +89,7 @@ async function submit() {
             organization_code: organization.value.code,
             branch_id: Number(form.branch_id),
             message: form.message.trim() || null,
+            role: asAdmin.value ? 'admin' : 'teacher',
         });
         notify.success('Your request was sent. An administrator of the school will review it.');
     } catch (err) {
@@ -154,6 +160,7 @@ function startOver() {
                     <strong>{{ request.organizationName }}</strong>
                     <template v-if="request.branchName"> ({{ request.branchName }})</template>
                     is waiting for an administrator to accept it. You will get access to your Home page as soon as they do.
+                    <template v-if="request.wantsAdmin"> You asked to join as an administrator; the school's administrator decides the role when accepting.</template>
                 </p>
                 <dl class="info">
                     <div class="info-item">
@@ -163,6 +170,10 @@ function startOver() {
                     <div class="info-item">
                         <dt>Branch</dt>
                         <dd>{{ request.branchName || '—' }}</dd>
+                    </div>
+                    <div class="info-item">
+                        <dt>Joining as</dt>
+                        <dd>{{ request.requestedRoleLabel }}</dd>
                     </div>
                     <div class="info-item">
                         <dt>Sent</dt>
@@ -185,8 +196,14 @@ function startOver() {
 
             <!-- Enter the code, pick a branch, send. -->
             <template v-else>
-                <h1>Join your school</h1>
-                <p class="muted intro">
+                <h1>{{ asAdmin ? 'Join a registered school' : 'Join your school' }}</h1>
+                <p v-if="asAdmin" class="muted intro">
+                    Hi {{ auth.user?.firstName }}. Enter the code of the school you will help administer, pick your branch and send a
+                    request to join as an administrator. One of its current administrators accepts it (as an administrator if the
+                    school's plan has room, otherwise as a teacher).
+                    Starting a school of your own instead? <RouterLink :to="{ name: 'setup-organization' }">Register a new school</RouterLink>.
+                </p>
+                <p v-else class="muted intro">
                     Hi {{ auth.user?.firstName }}. Enter the school code your administrator gave you, pick your branch and send a
                     request to join. Your records stay private to you; the administrator only sees them from the school's dashboard.
                 </p>
@@ -234,7 +251,7 @@ function startOver() {
                         </select>
                     </AppField>
 
-                    <AppField label="Message to the administrator" for="join-message" :error="fieldErrors.message" hint="Optional, e.g. the grade level you teach.">
+                    <AppField label="Message to the administrator" for="join-message" :error="fieldErrors.message" :hint="asAdmin ? 'Optional, e.g. who asked you to help run the school.' : 'Optional, e.g. the grade level you teach.'">
                         <input id="join-message" v-model="form.message" class="input" type="text" maxlength="255" :disabled="submitting" />
                     </AppField>
 

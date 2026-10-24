@@ -1,33 +1,58 @@
 import Subject from './Subject';
+import Section from './Section';
 import SchoolYear from './SchoolYear';
 import PaceAssignment from './PaceAssignment';
 
 /**
- * Grade level created by the signed-in user under one school year, with its subjects.
+ * A grade level of a branch under one school year, with its subjects and
+ * sections. Admins set it up; teachers see the grade levels they teach in.
  *
- * API shape: {id, name, sort_order, school_year_id, school_year?, students_count?, subjects_count?, subjects?: [],
+ * API shape: {id, branch_id, school_year_id, created_by, name, sort_order, school_year?, branch?: {id, name, code},
+ *             students_count?, subjects_count?, sections_count?, subjects?: [], sections?: [],
  *             assignments_count?, tested_count?, issued_count?, assigned_count?, assignments?: []}
  */
 export default class GradeLevel {
     constructor({
         id = null,
-        userId = null,
+        branchId = null,
+        createdBy = null,
         name = '',
         sortOrder = 0,
         schoolYearId = null,
         schoolYear = null,
+        branch = null,
         studentsCount = null,
         subjectsCount = null,
+        sectionsCount = null,
         subjects = [],
+        sections = [],
         assignmentsCount = null,
         testedCount = null,
         issuedCount = null,
         assignedCount = null,
         assignments = [],
-        teacher = null,
     } = {}) {
-        /** {id, name, email, branch_name}|null — the owning teacher, when the admin API included them. */
-        this.teacher = teacher;
+        this.id = id;
+        /** The branch (campus) the grade level belongs to. */
+        this.branchId = branchId;
+        /** Who set it up (an audit detail). */
+        this.createdBy = createdBy;
+        this.name = name;
+        this.sortOrder = sortOrder;
+        /** The school year this grade level (and its subjects) is registered under. */
+        this.schoolYearId = schoolYearId;
+        /** @type {SchoolYear|null} */
+        this.schoolYear = schoolYear;
+        /** {id, name, code}|null */
+        this.branch = branch;
+        /** Number of enrolled students (across every section), when the API included the count. */
+        this.studentsCount = studentsCount;
+        this.subjectsCount = subjectsCount;
+        this.sectionsCount = sectionsCount;
+        /** @type {Subject[]} */
+        this.subjects = subjects;
+        /** @type {Section[]} every section (admin) or the ones the teacher teaches in (teacher endpoints) */
+        this.sections = sections;
         /** Number of PACE records under all subjects, when the detail endpoint included the count. */
         this.assignmentsCount = assignmentsCount;
         /** Of assignmentsCount, how many are tested / issued-only / assigned-only. */
@@ -36,26 +61,16 @@ export default class GradeLevel {
         this.assignedCount = assignedCount;
         /** @type {PaceAssignment[]} PACE records under all subjects (detail endpoint only). */
         this.assignments = assignments;
-        this.id = id;
-        /** The teacher who owns the grade level (admin pages). */
-        this.userId = userId;
-        this.name = name;
-        this.sortOrder = sortOrder;
-        /** The school year this grade level (and its subjects) is registered under. */
-        this.schoolYearId = schoolYearId;
-        /** @type {SchoolYear|null} */
-        this.schoolYear = schoolYear;
-        /** Number of enrolled students, when the API included the count; otherwise null. */
-        this.studentsCount = studentsCount;
-        /** Number of subjects, when the API included the count; otherwise null. */
-        this.subjectsCount = subjectsCount;
-        /** @type {Subject[]} */
-        this.subjects = subjects;
     }
 
     /** Find one of this grade level's subjects by id (number or numeric string). */
     subjectById(subjectId) {
         return this.subjects.find((subject) => subject.id === Number(subjectId)) ?? null;
+    }
+
+    /** Find one of this grade level's sections by id. */
+    sectionById(sectionId) {
+        return this.sections.find((section) => section.id === Number(sectionId)) ?? null;
     }
 
     /** True when the record has been saved on the server. */
@@ -73,13 +88,13 @@ export default class GradeLevel {
         return this.schoolYear?.name ?? '';
     }
 
-    get teacherName() {
-        return this.teacher?.name ?? '';
+    get branchName() {
+        return this.branch?.name ?? '';
     }
 
-    /** The owning teacher's branch, when the admin API included it. */
-    get teacherBranchName() {
-        return this.teacher?.branch_name ?? '';
+    /** The school (organization) of the branch, when the API carried it. */
+    get organizationName() {
+        return this.branch?.organization?.name ?? '';
     }
 
     /** "Grade 1 · SY 2026-2027" (just the name when the school year is unknown). */
@@ -87,11 +102,20 @@ export default class GradeLevel {
         return this.schoolYearName ? `${this.name} · SY ${this.schoolYearName}` : this.name;
     }
 
-    /** Snake-case body for POST /grade-levels and PUT /grade-levels/{id}. */
+    /** "Grade 1 · North · SY 2026-2027" */
+    get labelWithBranch() {
+        return [this.name, this.branchName, this.schoolYearName ? `SY ${this.schoolYearName}` : ''].filter(Boolean).join(' · ');
+    }
+
+    /**
+     * Snake-case body for POST /admin/grade-levels (with branch_id) and
+     * PUT /admin/grade-levels/{id} (name and sort order only).
+     */
     toPayload() {
         const order = this.sortOrder;
 
         return {
+            branch_id: this.branchId ? Number(this.branchId) : null,
             name: String(this.name ?? '').trim(),
             school_year_id: this.schoolYearId ? Number(this.schoolYearId) : null,
             sort_order: order === '' || order === null || order === undefined ? null : Number(order),
@@ -99,8 +123,8 @@ export default class GradeLevel {
     }
 
     /** Empty instance for "create" forms. */
-    static blank(schoolYearId = null) {
-        return new GradeLevel({ sortOrder: '', schoolYearId });
+    static blank(schoolYearId = null, branchId = null) {
+        return new GradeLevel({ sortOrder: '', schoolYearId, branchId });
     }
 
     static fromJson(json) {
@@ -109,25 +133,31 @@ export default class GradeLevel {
         }
 
         const subjects = Subject.collection(json.subjects);
+        const sections = Section.collection(json.sections);
 
         return new GradeLevel({
             id: json.id ?? null,
-            userId: json.user_id ?? null,
+            branchId: json.branch_id ?? null,
+            createdBy: json.created_by ?? null,
             name: json.name ?? '',
             sortOrder: Number(json.sort_order ?? 0),
             schoolYearId: json.school_year_id ?? null,
             schoolYear: SchoolYear.fromJson(json.school_year),
+            branch: json.branch ?? null,
             studentsCount: json.students_count === undefined ? null : Number(json.students_count),
             subjectsCount: json.subjects_count === undefined
                 ? (Array.isArray(json.subjects) ? subjects.length : null)
                 : Number(json.subjects_count),
+            sectionsCount: json.sections_count === undefined
+                ? (Array.isArray(json.sections) ? sections.length : null)
+                : Number(json.sections_count),
             subjects,
+            sections,
             assignmentsCount: json.assignments_count === undefined ? null : Number(json.assignments_count),
             testedCount: json.tested_count === undefined ? null : Number(json.tested_count),
             issuedCount: json.issued_count === undefined ? null : Number(json.issued_count),
             assignedCount: json.assigned_count === undefined ? null : Number(json.assigned_count),
             assignments: PaceAssignment.collection(json.assignments),
-            teacher: json.teacher ?? null,
         });
     }
 

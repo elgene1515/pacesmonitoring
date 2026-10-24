@@ -6,8 +6,9 @@ use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
 /**
- * A teacher asks their school admin for PACE booklets: one of their registered
- * PACEs (`pace_id`) or a PACE named by number and name.
+ * A teacher asks their school admin for PACE booklets: a PACE of the
+ * branch's catalog (`pace_id`) or one named by number and name (new to the
+ * catalog, or matched to it automatically).
  */
 class StorePaceRequestRequest extends FormRequest
 {
@@ -24,7 +25,7 @@ class StorePaceRequestRequest extends FormRequest
         $freeForm = fn (): bool => ! $this->filled('pace_id');
 
         return [
-            'pace_id' => ['nullable', 'integer', Rule::exists('paces', 'id')->where('created_by', $this->user()?->id)],
+            'pace_id' => ['nullable', 'integer', Rule::exists('paces', 'id')->where('branch_id', $this->user()?->branch_id)],
             'pace_number' => [Rule::requiredIf($freeForm), 'nullable', 'digits_between:1,50'],
             'pace_name' => [Rule::requiredIf($freeForm), 'nullable', 'string', 'max:255'],
             'quantity' => ['required', 'integer', 'min:1', 'max:10000'],
@@ -52,9 +53,9 @@ class StorePaceRequestRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'pace_id.exists' => 'That PACE is not one of yours.',
-            'pace_number.required' => 'Pick one of your PACEs or enter the PACE number.',
-            'pace_name.required' => 'Pick one of your PACEs or enter the PACE name.',
+            'pace_id.exists' => "That PACE is not in your branch's catalog.",
+            'pace_number.required' => 'Pick a PACE from the catalog or enter the PACE number.',
+            'pace_name.required' => 'Pick a PACE from the catalog or enter the PACE name.',
             'pace_number.digits_between' => 'The PACE number must contain digits only.',
         ];
     }

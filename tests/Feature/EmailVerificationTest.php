@@ -29,7 +29,10 @@ class EmailVerificationTest extends ApiTestCase
         Notification::fake();
 
         $this->postJson('/api/register', [
-            'name' => 'Jane Teacher',
+            'first_name' => 'Jane',
+            'last_name' => 'Teacher',
+            'phone' => '0917 123 4567',
+            'terms' => true,
             'email' => 'jane@example.com',
             'password' => 'secret-password',
             'password_confirmation' => 'secret-password',
@@ -122,7 +125,7 @@ class EmailVerificationTest extends ApiTestCase
         Notification::fake();
         $user = $this->signIn();
 
-        $this->putJson('/api/profile', ['name' => $user->name, 'email' => 'new-address@example.com', 'current_password' => 'password'])
+        $this->putJson('/api/profile', ['first_name' => $user->name, 'last_name' => 'Tester', 'phone' => '0917 123 4567', 'email' => 'new-address@example.com', 'current_password' => 'password'])
             ->assertOk()
             ->assertJsonPath('data.email_verified', false);
 
@@ -130,7 +133,7 @@ class EmailVerificationTest extends ApiTestCase
         Notification::assertSentTo($user, VerifyEmail::class);
 
         // Keeping the same address changes nothing.
-        $this->putJson('/api/profile', ['name' => 'Renamed', 'email' => 'new-address@example.com', 'current_password' => 'password'])->assertOk();
+        $this->putJson('/api/profile', ['first_name' => 'Renamed', 'last_name' => 'Tester', 'phone' => '0917 123 4567', 'email' => 'new-address@example.com', 'current_password' => 'password'])->assertOk();
         Notification::assertSentToTimes($user, VerifyEmail::class, 1);
     }
 

@@ -1,76 +1,112 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue';
-import { useReferenceStore } from '../../stores/reference';
-import { useSchoolYearsStore } from '../../stores/schoolYears';
+import { adminService } from '../../services';
 import { notify } from '../../stores/notifications';
 import { GradeLevel } from '../../models';
 import AppModal from '../ui/AppModal.vue';
 import AppField from '../ui/AppField.vue';
+import SearchSelect from '../ui/SearchSelect.vue';
 
 /**
- * Create / edit a grade level (school year + name + optional sort order) through the reference store.
+ * Admin: create / edit a grade level of a branch under one school year.
  *
  *  props   modelValue    Boolean           open state (v-model)
  *          gradeLevel    GradeLevel|null   record to edit; null creates a new one
+ *          branches      Branch[]          the school's branches (new grade levels)
+ *          schoolYears   SchoolYear[]      the school's school years (new grade levels)
+ *          branchId      Number|null       branch preselected for a new grade level
  *          schoolYearId  Number|null       school year preselected for a new grade level
+ *          organizations Organization[]    platform owner only: a school dropdown you can type into comes first, and
+ *                                          the branches and school years offered narrow to the chosen school
  *  emits   update:modelValue(Boolean)
  *          saved(GradeLevel)               the created / updated record returned by the API
  */
 const props = defineProps({
     modelValue: { type: Boolean, default: false },
     gradeLevel: { type: Object, default: null },
+    branches: { type: Array, default: () => [] },
+    schoolYears: { type: Array, default: () => [] },
+    branchId: { type: [Number, String], default: null },
     schoolYearId: { type: [Number, String], default: null },
+    organizations: { type: Array, default: () => [] },
 });
 
 const emit = defineEmits(['update:modelValue', 'saved']);
 
-const reference = useReferenceStore();
-const schoolYears = useSchoolYearsStore();
 const uid = `grade-level-${Math.random().toString(36).slice(2, 8)}`;
 
-const form = reactive({ name: '', sortOrder: '', schoolYearId: '' });
+const form = reactive({ name: '', sortOrder: '', organizationId: '', branchId: '', schoolYearId: '' });
 const submitting = ref(false);
 const clientErrors = ref({});
 const serverErrors = ref({});
 
 const isEdit = computed(() => Boolean(props.gradeLevel?.exists));
+
+/** The school dropdown shows when the platform owner has schools to choose from. */
+const pickSchool = computed(() => props.organizations.length > 0 && !isEdit.value);
+const schoolOptions = computed(() => props.organizations.map((organization) => ({ value: organization.id, label: organization.name })));
+
+/** The chosen school's branches and school years (everything offered when there is no school dropdown). */
+const branchOptions = computed(() => (pickSchool.value
+    ? (form.organizationId === '' ? [] : props.branches.filter((branch) => String(branch.organizationId) === String(form.organizationId)))
+    : props.branches));
+const yearOptions = computed(() => (pickSchool.value
+    ? (form.organizationId === '' ? [] : props.schoolYears.filter((year) => String(year.organizationId) === String(form.organizationId)))
+    : props.schoolYears));
+
+/** Another school: start the branch and school year over with that school's own (one branch is picked for you). */
+function onSchoolChange(id) {
+    form.organizationId = id;
+    form.branchId = branchOptions.value.length === 1 ? branchOptions.value[0].id : '';
+    form.schoolYearId = yearOptions.value.find((year) => year.isCurrent)?.id ?? '';
+}
 const title = computed(() => (isEdit.value ? 'Edit grade level' : 'Add grade level'));
 const fieldErrors = computed(() => ({ ...clientErrors.value, ...serverErrors.value }));
-
-const yearLabel = computed(() => {
-    const year = schoolYears.byId(form.schoolYearId);
-    return year ? year.name : '';
-});
 
 function hydrate() {
     clientErrors.value = {};
     serverErrors.value = {};
     form.name = props.gradeLevel?.name ?? '';
     form.sortOrder = props.gradeLevel?.exists ? props.gradeLevel.sortOrder : '';
+    form.branchId = props.gradeLevel?.exists
+        ? (props.gradeLevel.branchId ?? '')
+        : (props.branchId || (props.branches.length === 1 ? props.branches[0].id : '') || '');
     form.schoolYearId = props.gradeLevel?.exists
         ? (props.gradeLevel.schoolYearId ?? '')
-        : (props.schoolYearId || schoolYears.current?.id || '');
+        : (props.schoolYearId || props.schoolYears.find((year) => year.isCurrent)?.id || '');
+
+    form.organizationId = '';
+
+    if (pickSchool.value) {
+        // The branch the page is filtered on tells which school; the only school there is starts the form too.
+        const known = props.branches.find((branch) => String(branch.id) === String(props.branchId));
+
+        form.organizationId = known?.organizationId ?? (props.organizations.length === 1 ? props.organizations[0].id : '');
+
+        if (form.organizationId !== '') {
+            // Keep a preselected branch / year only when it belongs to that school.
+            if (!branchOptions.value.some((branch) => String(branch.id) === String(form.branchId))) {
+                form.branchId = branchOptions.value.length === 1 ? branchOptions.value[0].id : '';
+            }
+
+            if (!yearOptions.value.some((year) => String(year.id) === String(form.schoolYearId))) {
+                form.schoolYearId = yearOptions.value.find((year) => year.isCurrent)?.id ?? '';
+            }
+        } else {
+            form.branchId = '';
+            form.schoolYearId = '';
+        }
+    }
 }
 
 watch(
     () => props.modelValue,
     (open) => {
         if (open) {
-            schoolYears.load();
             hydrate();
         }
     },
     { immediate: true },
-);
-
-/** A new grade level defaults to the current school year once the years are loaded. */
-watch(
-    () => schoolYears.current,
-    (current) => {
-        if (current && !form.schoolYearId && !props.gradeLevel?.exists) {
-            form.schoolYearId = current.id;
-        }
-    },
 );
 
 function close() {
@@ -88,6 +124,14 @@ function validate() {
         errors.name = ['Grade level name is required.'];
     } else if (String(form.name).trim().length > 100) {
         errors.name = ['Grade level name may not be longer than 100 characters.'];
+    }
+
+    if (pickSchool.value && form.organizationId === '') {
+        errors.organization_id = ['Please select the school first.'];
+    }
+
+    if (!isEdit.value && !form.branchId) {
+        errors.branch_id = ['Please select the branch this grade level belongs to.'];
     }
 
     if (!isEdit.value && !form.schoolYearId) {
@@ -115,6 +159,7 @@ async function submit() {
         id: props.gradeLevel?.id ?? null,
         name: String(form.name).trim(),
         sortOrder: form.sortOrder,
+        branchId: form.branchId,
         schoolYearId: form.schoolYearId,
     });
 
@@ -123,10 +168,10 @@ async function submit() {
 
     try {
         const saved = isEdit.value
-            ? await reference.updateGradeLevel(props.gradeLevel.id, model)
-            : await reference.createGradeLevel(model);
+            ? await adminService.updateGradeLevel(props.gradeLevel.id, model)
+            : await adminService.createGradeLevel(model);
 
-        notify.success(isEdit.value ? 'Grade level updated.' : `${saved.name} added to SY ${saved.schoolYearName || yearLabel.value}.`);
+        notify.success(isEdit.value ? 'Grade level updated.' : `${saved.name} added${saved.schoolYearName ? ` to SY ${saved.schoolYearName}` : ''}.`);
         emit('saved', saved);
         emit('update:modelValue', false);
     } catch (err) {
@@ -152,29 +197,62 @@ async function submit() {
     >
         <form v-if="modelValue" class="grade-level-form" novalidate @submit.prevent="submit">
             <AppField
+                v-if="pickSchool"
+                label="School"
+                :for="`${uid}-school`"
+                :error="fieldErrors.organization_id"
+                hint="Click to pick a school, or type part of its name to find it."
+                required
+            >
+                <SearchSelect
+                    :id="`${uid}-school`"
+                    :model-value="form.organizationId"
+                    :options="schoolOptions"
+                    placeholder="Select a school"
+                    empty-text="No school matches"
+                    :invalid="Boolean(fieldErrors.organization_id)"
+                    :disabled="submitting"
+                    @change="onSchoolChange"
+                />
+            </AppField>
+
+            <AppField
+                v-if="!isEdit"
+                label="Branch"
+                :for="`${uid}-branch`"
+                :error="fieldErrors.branch_id"
+                hint="Each branch has its own grade levels and sections."
+                required
+            >
+                <select :id="`${uid}-branch`" v-model="form.branchId" class="input" :disabled="submitting || (pickSchool && form.organizationId === '')">
+                    <option value="" disabled>{{ pickSchool && form.organizationId === '' ? 'Select a school first' : (branchOptions.length ? 'Select branch' : 'No branches') }}</option>
+                    <option v-for="branch in branchOptions" :key="branch.id" :value="branch.id">{{ branch.name }}</option>
+                </select>
+            </AppField>
+
+            <AppField
+                v-if="!isEdit"
                 label="School year"
                 :for="`${uid}-year`"
                 :error="fieldErrors.school_year_id"
-                :hint="isEdit ? 'A grade level stays in the school year it was registered under.' : 'Each school year has its own set of grade levels and subjects.'"
+                hint="Each school year has its own set of grade levels, subjects and sections."
                 required
             >
-                <select
-                    :id="`${uid}-year`"
-                    v-model="form.schoolYearId"
-                    class="input"
-                    :disabled="submitting || isEdit || schoolYears.loading"
-                >
-                    <option value="" disabled>
-                        {{ schoolYears.loading ? 'Loading…' : (schoolYears.hasItems ? 'Select school year' : 'No school years registered') }}
-                    </option>
-                    <option v-for="year in schoolYears.items" :key="year.id" :value="year.id">
+                <select :id="`${uid}-year`" v-model="form.schoolYearId" class="input" :disabled="submitting || (pickSchool && form.organizationId === '')">
+                    <option value="" disabled>{{ pickSchool && form.organizationId === '' ? 'Select a school first' : (yearOptions.length ? 'Select school year' : 'No school years registered') }}</option>
+                    <option v-for="year in yearOptions" :key="year.id" :value="year.id">
                         {{ year.name }}{{ year.isCurrent ? ' (current)' : '' }}
                     </option>
                 </select>
-                <small v-if="schoolYears.loaded && !schoolYears.hasItems" class="no-years">
-                    Ask your school administrator to register a school year first.
+                <small v-if="yearOptions.length === 0 && !(pickSchool && form.organizationId === '')" class="no-years">
+                    <RouterLink :to="{ name: 'admin-school-years' }">Register a school year</RouterLink> first.
                 </small>
             </AppField>
+
+            <p v-else class="muted fixed">
+                {{ gradeLevel.branchName ? `${gradeLevel.branchName} · ` : '' }}SY {{ gradeLevel.schoolYearName || '—' }}
+                — a grade level stays in the branch and school year it was registered under.
+            </p>
 
             <AppField label="Name" :for="`${uid}-name`" :error="fieldErrors.name" hint="e.g. Kindergarten, Grade 1" required>
                 <input
@@ -221,6 +299,11 @@ async function submit() {
     display: flex;
     flex-direction: column;
     gap: 14px;
+}
+
+.fixed {
+    margin: 0;
+    font-size: 0.9rem;
 }
 
 .no-years {

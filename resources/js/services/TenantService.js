@@ -8,7 +8,8 @@ import Plan from '../models/Plan';
  *  lookupOrganization(code)        GET  /api/organizations/lookup?code= -> { id, name, code, branches: [{id, name, code, isMain}] }
  *  setupOrganization(payload)      POST /api/organizations {name, address?, contact_email?, contact_phone?, branches?: string[]}
  *                                  -> User (refreshed, now with an organization)
- *  submitJoinRequest(payload)      POST /api/join-requests {organization_code, branch_id, message?} -> JoinRequest
+ *  submitJoinRequest(payload)      POST /api/join-requests {organization_code, branch_id, message?, role?} -> JoinRequest
+ *                                  (role 'admin' only counts for admin-type accounts joining a registered school)
  *  cancelJoinRequest(id)           DELETE /api/join-requests/{id} -> void
  *  listPlans()                     GET  /api/plans -> Plan[] (the active plans a school can pick)
  */

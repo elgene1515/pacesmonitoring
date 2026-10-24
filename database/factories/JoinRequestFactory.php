@@ -36,6 +36,7 @@ class JoinRequestFactory extends Factory
                 ->where('organization_id', $attributes['organization_id'])
                 ->orderByDesc('is_main')
                 ->value('id'),
+            'requested_role' => 'teacher',
             'status' => JoinRequestStatus::Pending,
             'message' => fake()->optional()->sentence(),
         ];

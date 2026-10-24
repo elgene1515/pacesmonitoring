@@ -76,7 +76,7 @@ function hideTooltip() {
                             <div v-if="bar.other" class="segment other" :style="{ height: `${bar.heights.other}px` }" />
                             <div class="segment male" :style="{ height: `${bar.heights.male}px` }" />
                         </div>
-                        <component :is="bar.to ? RouterLink : 'span'" :to="bar.to ?? undefined" class="bar-label muted">
+                        <component :is="bar.to ? RouterLink : 'span'" :to="bar.to ?? undefined" class="bar-label muted" :title="bar.label">
                             {{ bar.label }}
                         </component>
                     </div>
